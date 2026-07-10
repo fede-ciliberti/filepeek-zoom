@@ -100,6 +100,16 @@ Prefer no public exposure at all? `FILEPEEK_MODE=tailscale` serves it only on yo
 `https://<machine>.<tailnet>.ts.net` URL in your mobile browser — no public
 ports, no extra setup. Verified working in mobile Safari on iPhone.
 
+## Cloud drives — OneDrive, SharePoint, Google Drive
+
+filepeek serves any directory, and that includes a synced or mounted cloud
+drive. Make the drive appear as a local folder — on WSL2 the Windows sync
+clients are enough (`/mnt/c/Users/you/OneDrive`); on Linux or a cloud VM use
+an `rclone mount` or the abraunegg onedrive client — then point
+`FILEPEEK_ROOT` at it. SharePoint document libraries work the same way.
+Copy-paste setup for all three, plus the caveats, in
+**[docs/CLOUD-DRIVES.md](docs/CLOUD-DRIVES.md)**.
+
 ## Tracks — task boards in a file
 
 Any file ending in `.nts` opens as an interactive **task board** instead of raw

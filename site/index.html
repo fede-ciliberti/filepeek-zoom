@@ -62,6 +62,11 @@
     },
     {
       "@type": "Question",
+      "name": "Can filepeek show my OneDrive, SharePoint, or Google Drive files?",
+      "acceptedAnswer": { "@type": "Answer", "text": "Yes — make the cloud drive appear as a local folder (Windows sync client on WSL2, an rclone mount, or a Linux sync client like abraunegg onedrive) and point FILEPEEK_ROOT at it. A step-by-step guide covers OneDrive, SharePoint document libraries, and Google Drive." }
+    },
+    {
+      "@type": "Question",
       "name": "Can filepeek back up my files?",
       "acceptedAnswer": { "@type": "Answer", "text": "Yes — built in. Back up selected folders or everything to a local/NAS folder or any S3-compatible cloud (AWS, Backblaze B2, Wasabi, Cloudflare R2, MinIO) on a schedule or on demand. Cloud setup is four pasted values. Copy mode never deletes; mirror mode is gated behind a preview and a typed confirmation." }
     },
@@ -210,6 +215,7 @@
     <div class="card"><h3>🖼️ Images, video &amp; audio</h3><p>View PNG/JPG/GIF/WebP, play mp4/webm/mov video and mp3/wav audio — inline, no download.</p></div>
     <div class="card"><h3>🔍 Search &amp; organize</h3><p>Filename and full-text search, bookmarks, and a bookmarkable URL for every folder and file.</p></div>
     <div class="card"><h3>🔐 Self-hosted &amp; private</h3><p>Your files never leave your machine. Optional HTTPS + password mode for cloud servers and Tailscale.</p></div>
+    <div class="card"><h3>☁️ Cloud drives too</h3><p>Browse OneDrive, SharePoint, or Google Drive as a folder — <a href="https://github.com/thrinz/filepeek/blob/main/docs/CLOUD-DRIVES.md">step-by-step setup guide</a> for WSL2, Linux, and cloud VMs.</p></div>
   </div>
 
   <h2>See it in action</h2>
@@ -264,6 +270,13 @@ FILEPEEK_ROOT=~/projects .venv/bin/python app.py</code></pre>
        Localhost forwarding is automatic.</p></details>
   <details><summary>Is my data sent anywhere?</summary>
     <p>No. filepeek is fully self-hosted and reads files straight off your disk.</p></details>
+  <details><summary>Can it show my OneDrive, SharePoint, or Google Drive files?</summary>
+    <p>Yes — make the drive appear as a local folder and point <code>FILEPEEK_ROOT</code> at it.
+       On WSL2 the Windows sync clients you already have are enough (<code>/mnt/c/Users/you/OneDrive</code>);
+       on Linux or a cloud VM, an <code>rclone mount</code> or the abraunegg onedrive client does it —
+       SharePoint document libraries included. The
+       <a href="https://github.com/thrinz/filepeek/blob/main/docs/CLOUD-DRIVES.md">cloud drives guide</a>
+       has copy-paste setup for all three.</p></details>
   <details><summary>Can filepeek back up my files?</summary>
     <p>Yes — built in. Back up selected folders (or everything) to a local/NAS folder or any
        S3-compatible cloud (AWS, Backblaze B2, Wasabi, Cloudflare R2, MinIO) on a schedule or on
@@ -281,6 +294,7 @@ FILEPEEK_ROOT=~/projects .venv/bin/python app.py</code></pre>
 <footer>
   <a href="https://github.com/thrinz/filepeek">GitHub</a> ·
   <a href="https://github.com/thrinz/filepeek/blob/main/docs/INSTALL.md">Install guide</a> ·
+  <a href="https://github.com/thrinz/filepeek/blob/main/docs/CLOUD-DRIVES.md">Cloud drives</a> ·
   MIT licensed
 </footer>
 
