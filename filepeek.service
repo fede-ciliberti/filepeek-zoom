@@ -4,6 +4,8 @@ After=network.target
 
 [Service]
 Type=simple
+# User/Group are placeholders — deploy/install-remote.sh rewrites them to the
+# resolved service user (FILEPEEK_USER, or the owner of an existing data dir).
 User=filepeek
 Group=filepeek
 EnvironmentFile=/etc/filepeek/filepeek.env

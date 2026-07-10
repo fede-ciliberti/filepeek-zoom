@@ -13,6 +13,11 @@
 #   FILEPEEK_MODE      "public" (default: Caddy reverse proxy on 80/443) or
 #                      "tailscale" (no public exposure; served on your tailnet).
 #   FILEPEEK_ROOT_DIR  Directory to serve. Default: /srv/filepeek/files
+#   FILEPEEK_USER      User to run the service as. Default: a dedicated
+#                      "filepeek" system user — unless FILEPEEK_ROOT_DIR
+#                      already exists and belongs to a regular user, in which
+#                      case that user is used so their file permissions are
+#                      left untouched.
 #   FILEPEEK_REPO      Git repo to install from (default below).
 #   TS_AUTHKEY         Tailscale auth key (tailscale mode; skips interactive login).
 #
@@ -40,6 +45,8 @@ CREDS_FILE=/root/filepeek-credentials.txt
 PORT=8765
 
 PKG=""
+SVC_USER="${FILEPEEK_USER:-}"
+SVC_GROUP=""
 PASSWORD=""
 TOKEN=""
 URL=""
@@ -74,9 +81,34 @@ install_packages() {
   fi
 }
 
+# Decide which user the service runs as. Never chown a directory the admin
+# already owns — if the data dir pre-exists and belongs to a regular user,
+# run as that user instead of creating a dedicated one.
+resolve_service_user() {
+  if [ -n "$SVC_USER" ]; then
+    if ! id -u "$SVC_USER" >/dev/null 2>&1; then
+      echo "ERROR: FILEPEEK_USER '$SVC_USER' does not exist." >&2
+      exit 1
+    fi
+  elif [ -d "$DATA_DIR" ]; then
+    local owner
+    owner="$(stat -c %U "$DATA_DIR")"
+    if [ "$owner" != "root" ] && id -u "$owner" >/dev/null 2>&1; then
+      SVC_USER="$owner"
+      echo "==> ${DATA_DIR} already exists and is owned by '${owner}' — running the"
+      echo "    service as that user (override with FILEPEEK_USER=<name>)"
+    fi
+  fi
+  if [ -z "$SVC_USER" ]; then
+    SVC_USER=filepeek
+    id -u filepeek >/dev/null 2>&1 || useradd --system --home-dir "$STATE_DIR" --shell /usr/sbin/nologin filepeek
+  fi
+  SVC_GROUP="$(id -gn "$SVC_USER")"
+}
+
 install_app() {
   echo "==> Installing filepeek to ${APP_DIR}"
-  id -u filepeek >/dev/null 2>&1 || useradd --system --home-dir "$STATE_DIR" --shell /usr/sbin/nologin filepeek
+  resolve_service_user
 
   if [ -d "$APP_DIR/.git" ]; then
     git -C "$APP_DIR" pull --ff-only
@@ -88,18 +120,24 @@ install_app() {
   "$APP_DIR/.venv/bin/python" -m pip install --quiet --upgrade pip
   "$APP_DIR/.venv/bin/python" -m pip install --quiet -r "$APP_DIR/requirements.txt"
 
-  mkdir -p "$DATA_DIR" "$STATE_DIR" "$(dirname "$ENV_FILE")"
-  chown -R filepeek:filepeek "$DATA_DIR" "$STATE_DIR"
-  chown -R filepeek:filepeek "$APP_DIR"
+  if [ ! -d "$DATA_DIR" ]; then
+    mkdir -p "$DATA_DIR"
+    chown "$SVC_USER:$SVC_GROUP" "$DATA_DIR"
+  fi
+  mkdir -p "$STATE_DIR" "$(dirname "$ENV_FILE")"
+  chown -R "$SVC_USER:$SVC_GROUP" "$STATE_DIR"
+  chown -R "$SVC_USER:$SVC_GROUP" "$APP_DIR"
 }
 
 install_service() {
-  cp "$APP_DIR/filepeek.service" /etc/systemd/system/filepeek.service
+  sed -e "s|^User=.*|User=$SVC_USER|" -e "s|^Group=.*|Group=$SVC_GROUP|" \
+    "$APP_DIR/filepeek.service" > /etc/systemd/system/filepeek.service
   systemctl daemon-reload
 }
 
 generate_credentials() {
   echo "==> Generating credentials"
+  [ -n "$SVC_GROUP" ] || resolve_service_user  # firstboot phase runs without install_app
   PASSWORD="$(python3 -c 'import secrets; print(secrets.token_urlsafe(12))')"
   TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
   local secret hash
@@ -116,7 +154,7 @@ FILEPEEK_TOKEN=$TOKEN
 FILEPEEK_SECRET=$secret
 FILEPEEK_PASSWORD_MUST_CHANGE=1
 EOF
-  chown root:filepeek "$ENV_FILE"
+  chown "root:$SVC_GROUP" "$ENV_FILE"
   chmod 640 "$ENV_FILE"
 }
 
