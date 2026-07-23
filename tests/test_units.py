@@ -26,20 +26,30 @@ def test_verify_password_rejects_malformed(stored):
 
 def test_session_sign_and_validate():
     cookie = filepeek._sign_session(int(time.time()) + 60)
-    assert filepeek._session_valid(cookie)
+    assert filepeek._session_auth(cookie) == {"role": "root", "key_id": ""}
+
+
+def test_session_key_role_roundtrip():
+    cookie = filepeek._sign_session(int(time.time()) + 60, "key", "abcd1234")
+    assert filepeek._session_auth(cookie) == {"role": "key", "key_id": "abcd1234"}
 
 
 def test_session_expired():
-    assert not filepeek._session_valid(filepeek._sign_session(int(time.time()) - 1))
+    assert filepeek._session_auth(filepeek._sign_session(int(time.time()) - 1)) is None
 
 
 def test_session_tampered():
     cookie = filepeek._sign_session(int(time.time()) + 60)
-    expiry, _, sig = cookie.partition(".")
-    assert not filepeek._session_valid(f"{expiry}.{'0' * len(sig)}")
-    assert not filepeek._session_valid(f"{int(expiry) + 9999}.{sig}")
-    assert not filepeek._session_valid(None)
-    assert not filepeek._session_valid("no-dot")
+    expiry, role, key_id, sig = cookie.split(".")
+    assert filepeek._session_auth(f"{expiry}.{role}.{key_id}.{'0' * len(sig)}") is None
+    assert filepeek._session_auth(f"{int(expiry) + 9999}.{role}.{key_id}.{sig}") is None
+    # role escalation: re-labeling a key session as root breaks the signature
+    key_cookie = filepeek._sign_session(int(time.time()) + 60, "key", "abcd1234")
+    e2, _, k2, s2 = key_cookie.split(".")
+    assert filepeek._session_auth(f"{e2}.root.{k2}.{s2}") is None
+    assert filepeek._session_auth(None) is None
+    assert filepeek._session_auth("no-dot") is None
+    assert filepeek._session_auth("1.2.3") is None
 
 
 # --- path safety ----------------------------------------------------------

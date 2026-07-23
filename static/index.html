@@ -223,6 +223,7 @@ if (localStorage.getItem("filepeek-theme") === "dark" ||
       <input type="file" id="upload-input" class="hidden" multiple>
       <button id="btn-zip-folder" title="Download this folder as a zip (max 500MB)" class="px-3 py-1 border border-slate-300 dark:border-ink-border rounded hover:bg-slate-100 dark:hover:bg-ink-hover">&#11015; Download Folder</button>
       <button id="btn-backup" title="Backup — protect your files locally or to cloud storage" class="px-3 py-1 border border-slate-300 dark:border-ink-border rounded hover:bg-slate-100 dark:hover:bg-ink-hover">&#9729; Backup</button>
+      <button id="btn-apikeys" title="API keys — give others limited access" class="hidden px-3 py-1 border border-slate-300 dark:border-ink-border rounded hover:bg-slate-100 dark:hover:bg-ink-hover">&#128273; API Keys</button>
       <button id="btn-search" title="Search filenames"
               class="px-3 py-1 border border-slate-300 dark:border-ink-border rounded hover:bg-slate-100 dark:hover:bg-ink-hover">&#128269;</button>
       <button id="btn-refresh" title="Refresh folder"
@@ -455,6 +456,37 @@ if (localStorage.getItem("filepeek-theme") === "dark" ||
   </div>
 </div>
 
+<div id="apikeys-modal" class="hidden fixed inset-0 bg-black/40 z-50 flex items-center justify-center">
+  <div class="bg-white dark:bg-ink-side rounded-lg shadow-xl w-full max-w-2xl mx-4 p-5 flex flex-col" style="max-height: 85vh;">
+    <div class="flex items-center justify-between mb-2">
+      <h2 class="font-semibold text-base">API Keys</h2>
+      <button id="apikeys-close" class="text-slate-400 dark:text-ink-dim hover:text-slate-600 dark:hover:text-ink-fg text-2xl leading-none">&times;</button>
+    </div>
+    <p class="text-xs text-slate-500 dark:text-ink-dim mb-3">
+      A key logs in on the login page (or works as a <span class="font-mono">Bearer</span> token) with only the
+      permissions you tick. Permissions apply to the whole tree from the root folder down. Key users can never
+      manage backups or keys, and can never create folders at the root level.
+    </p>
+
+    <div class="border border-slate-200 dark:border-ink-border rounded p-3 mb-3">
+      <div class="flex flex-wrap items-center gap-2 mb-2">
+        <input id="apikey-label" spellcheck="false" placeholder="Label (who is this key for?)"
+               class="flex-1 min-w-[12rem] px-2 py-1.5 border border-slate-300 dark:border-ink-border rounded text-xs bg-white dark:bg-ink-side">
+        <button id="apikey-create" class="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded text-xs whitespace-nowrap">Create key</button>
+      </div>
+      <div class="flex flex-wrap gap-x-4 gap-y-1 text-xs">
+        <label class="flex items-center gap-1.5"><input type="checkbox" id="apikey-perm-view" checked> View folders</label>
+        <label class="flex items-center gap-1.5"><input type="checkbox" id="apikey-perm-read"> Read files</label>
+        <label class="flex items-center gap-1.5"><input type="checkbox" id="apikey-perm-write"> Write</label>
+        <label class="flex items-center gap-1.5"><input type="checkbox" id="apikey-perm-delete_folders"> Delete subfolders</label>
+        <label class="flex items-center gap-1.5"><input type="checkbox" id="apikey-perm-delete_files"> Delete files</label>
+      </div>
+    </div>
+
+    <div id="apikeys-list" class="flex-1 overflow-y-auto flex flex-col gap-2"></div>
+  </div>
+</div>
+
 <div id="ctx-menu" class="dropdown fixed z-50 bg-white dark:bg-ink-side border border-slate-200 dark:border-ink-border rounded shadow-lg py-1 text-sm min-w-[10rem]"></div>
 
 <div id="toast"
@@ -472,6 +504,39 @@ const AUDIO_EXTS = [".mp3", ".wav", ".ogg", ".m4a", ".flac", ".aac"];
 const MERMAID_EXTS = [".mmd", ".mermaid"];
 const PREVIEW_EXTS = [".md", ".markdown", ".html", ".htm", ".csv", ".tsv", ".json", ".svg", ...MERMAID_EXTS];
 const $ = id => document.getElementById(id);
+
+// Who's signed in and what they may do (root until /api/me says otherwise).
+// The server enforces every permission; this only hides UI that would 403.
+let AUTH = { role: "root", permissions: { view: true, read: true, write: true,
+             delete_folders: true, delete_files: true }, auth_enabled: false };
+const can = p => AUTH.role === "root" || !!(AUTH.permissions && AUTH.permissions[p]);
+
+async function initAuth() {
+  try { AUTH = await api("/api/me"); } catch { return; }
+  if (AUTH.auth_enabled && AUTH.role === "root") $("btn-apikeys").classList.remove("hidden");
+  if (AUTH.role === "root") return;
+  $("btn-backup").classList.add("hidden");
+  if (!can("read")) $("btn-zip-folder").classList.add("hidden");
+  if (!can("write")) {
+    for (const id of ["btn-new-file", "btn-new-folder", "btn-upload", "btn-bookmark-folder"])
+      $(id).classList.add("hidden");
+  }
+}
+
+// Re-hide right-toolbar buttons the current key has no permission for
+// (renderFile unhides them per file type first).
+function permGateToolbar() {
+  if (AUTH.role === "root") return;
+  const gate = (id, p) => { if (!can(p)) $(id).classList.add("hidden"); };
+  gate("btn-edit", "write");
+  gate("btn-save", "write");
+  gate("btn-download", "read");
+  gate("btn-rename", "write");
+  gate("btn-copy-to", "write");
+  gate("btn-move-to", "write");
+  gate("btn-permlink", "write");
+  gate("btn-delete", "delete_files");
+}
 
 if (window.mermaid) mermaid.initialize({ startOnLoad: false });
 let _mermaidSeq = 0;
@@ -843,6 +908,7 @@ function renderFile() {
       $(id).classList.add("hidden");
     for (const id of ["btn-download", "btn-rename", "btn-copy-to", "btn-move-to", "btn-delete"])
       $(id).classList.remove("hidden");
+    permGateToolbar();
     state.board = loadBoard(f.content || "");
     state.boardCode = false;
     _ntsDisplay = "board";
@@ -877,6 +943,7 @@ function renderFile() {
   $("btn-permlink").classList.toggle("hidden", ![".html", ".htm", ".md", ".markdown"].includes(f.ext));
   // Only text previewables (md/html/csv) have a Code/Preview toggle.
   $("btn-toggle-preview").classList.toggle("hidden", !(textPreviewable && f.is_text));
+  permGateToolbar();
   $("btn-edit").textContent = "Edit";
 
   setCode(f.is_text ? (f.content || "")
@@ -1662,6 +1729,77 @@ async function showBackupLogs() {
   } catch (e) { toast("Error: " + e.message); }
 }
 
+// --- API keys (root only) ------------------------------------------------
+const PERM_DEFS = [
+  ["view", "View folders"], ["read", "Read files"], ["write", "Write"],
+  ["delete_folders", "Delete subfolders"], ["delete_files", "Delete files"],
+];
+
+function openApiKeysModal() { $("apikeys-modal").classList.remove("hidden"); loadApiKeys(); }
+function closeApiKeysModal() { $("apikeys-modal").classList.add("hidden"); }
+
+async function loadApiKeys() {
+  const list = $("apikeys-list");
+  try {
+    const r = await api("/api/keys");
+    list.innerHTML = "";
+    if (!r.keys.length) {
+      list.innerHTML = '<div class="text-xs text-slate-400 dark:text-ink-dim text-center py-4">No API keys yet — create one above.</div>';
+      return;
+    }
+    for (const k of r.keys) list.appendChild(renderKeyRow(k));
+  } catch (e) { toast("Error: " + e.message); }
+}
+
+function renderKeyRow(k) {
+  const row = document.createElement("div");
+  row.className = "border border-slate-200 dark:border-ink-border rounded p-2.5 text-xs";
+  const boxes = PERM_DEFS.map(([p, label]) =>
+    `<label class="flex items-center gap-1.5"><input type="checkbox" data-perm="${p}" ${k.permissions[p] ? "checked" : ""}> ${label}</label>`).join("");
+  row.innerHTML = `
+    <div class="flex items-center gap-2 mb-1.5">
+      <code class="font-mono bg-slate-100 dark:bg-ink-bg px-1.5 py-0.5 rounded select-all">${escapeHtml(k.key)}</code>
+      <button class="copy-key px-2 py-0.5 border border-slate-300 dark:border-ink-border rounded hover:bg-slate-100 dark:hover:bg-ink-hover">Copy</button>
+      <span class="font-medium truncate">${escapeHtml(k.label || "(no label)")}</span>
+      <span class="ml-auto text-slate-400 dark:text-ink-dim whitespace-nowrap">${fmtDate(k.created)}</span>
+      <button class="del-key px-2 py-0.5 border border-red-300 dark:border-red-900 text-red-600 dark:text-red-400 rounded hover:bg-red-50 dark:hover:bg-red-950">Delete</button>
+    </div>
+    <div class="flex flex-wrap gap-x-4 gap-y-1">${boxes}</div>`;
+  row.querySelector(".copy-key").onclick = async () => {
+    try { await navigator.clipboard.writeText(k.key); toast("Key copied"); }
+    catch { toast("Copy failed — select the key text instead"); }
+  };
+  row.querySelector(".del-key").onclick = async () => {
+    if (!confirm(`Delete API key "${k.label || k.key}"? Anyone using it loses access immediately.`)) return;
+    try { await api(`/api/keys?id=${encodeURIComponent(k.id)}`, { method: "DELETE" }); loadApiKeys(); }
+    catch (e) { toast("Error: " + e.message); }
+  };
+  for (const box of row.querySelectorAll("input[data-perm]")) {
+    box.onchange = async () => {
+      const permissions = {};
+      for (const b of row.querySelectorAll("input[data-perm]")) permissions[b.dataset.perm] = b.checked;
+      try {
+        await api("/api/keys", { method: "PUT", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id: k.id, permissions }) });
+        toast("Permissions updated");
+      } catch (e) { toast("Error: " + e.message); loadApiKeys(); }
+    };
+  }
+  return row;
+}
+
+async function createApiKey() {
+  const permissions = {};
+  for (const [p] of PERM_DEFS) permissions[p] = $("apikey-perm-" + p).checked;
+  try {
+    const rec = await api("/api/keys", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ label: $("apikey-label").value, permissions }) });
+    $("apikey-label").value = "";
+    toast(`Key created: ${rec.key}`);
+    loadApiKeys();
+  } catch (e) { toast("Error: " + e.message); }
+}
+
 // --- Right-click context menu on tree rows -------------------------------
 function showContextMenu(x, y, entry) {
   const menu = $("ctx-menu");
@@ -1674,9 +1812,13 @@ function showContextMenu(x, y, entry) {
     item.onclick = () => { hideContextMenu(); fn(); };
     menu.appendChild(item);
   };
-  add("Copy to…", false, () => openTransfer("copy", entry.path, entry.name, entry.is_dir));
-  add("Move to…", false, () => openTransfer("move", entry.path, entry.name, entry.is_dir));
-  add("Delete", true, () => deleteEntry(entry.path, entry.name, entry.is_dir));
+  if (can("write")) {
+    add("Copy to…", false, () => openTransfer("copy", entry.path, entry.name, entry.is_dir));
+    add("Move to…", false, () => openTransfer("move", entry.path, entry.name, entry.is_dir));
+  }
+  if (can(entry.is_dir ? "delete_folders" : "delete_files"))
+    add("Delete", true, () => deleteEntry(entry.path, entry.name, entry.is_dir));
+  if (!menu.children.length) return;
   menu.classList.add("show");
   // Keep the menu inside the viewport.
   const r = menu.getBoundingClientRect();
@@ -1725,7 +1867,11 @@ async function navigateToFile(path) {
 }
 
 $("btn-new-file").onclick = () => newItem(false);
-$("btn-new-folder").onclick = () => newItem(true);
+$("btn-new-folder").onclick = () => {
+  if (AUTH.role === "key" && !state.path)
+    return toast("API keys can't create folders at the root level");
+  newItem(true);
+};
 
 const MAX_UPLOAD = 500 * 1024 * 1024;
 $("btn-upload").onclick = () => $("upload-input").click();
@@ -1867,7 +2013,12 @@ $("transfer-cancel").onclick = closeTransfer;
 $("transfer-confirm").onclick = transferConfirm;
 $("transfer-modal").onclick = e => { if (e.target === $("transfer-modal")) closeTransfer(); };
 document.addEventListener("click", e => { if (!$("ctx-menu").contains(e.target)) hideContextMenu(); });
-document.addEventListener("keydown", e => { if (e.key === "Escape") { hideContextMenu(); closeTransfer(); closeBackupModal(); } });
+document.addEventListener("keydown", e => { if (e.key === "Escape") { hideContextMenu(); closeTransfer(); closeBackupModal(); closeApiKeysModal(); } });
+
+$("btn-apikeys").onclick = openApiKeysModal;
+$("apikeys-close").onclick = closeApiKeysModal;
+$("apikeys-modal").onclick = e => { if (e.target === $("apikeys-modal")) closeApiKeysModal(); };
+$("apikey-create").onclick = createApiKey;
 
 $("btn-backup").onclick = openBackupModal;
 $("backup-close").onclick = closeBackupModal;
@@ -1992,6 +2143,7 @@ window.addEventListener("popstate", async () => {
   catch {} finally { _suppressUrlSync = false; }
 });
 
+initAuth();
 openFromUrl(new URLSearchParams(location.search).get("path") || "").catch(() => loadTree());
 loadPermlinks();
 loadBookmarks();

@@ -78,6 +78,58 @@ UPLOAD_CHUNK = 1024 * 1024  # 1MB streaming chunks
 # until that override exists.
 AUTH_STATE_FILE = STATE_DIR / "auth.json"
 
+# --- API keys -------------------------------------------------------------
+# Root can mint 10-char alphanumeric keys, each with its own permission set.
+# A key logs in on the login page (or as a Bearer token) and gets exactly the
+# permissions granted to it; permissions apply to the whole tree ("set at the
+# root folder"), and key users can never create folders directly at the root.
+APIKEYS_FILE = STATE_DIR / "apikeys.json"
+API_KEY_LEN = 10
+API_KEY_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789"
+KEY_PERMS = ("view", "read", "write", "delete_folders", "delete_files")
+FULL_PERMS = {p: True for p in KEY_PERMS}
+
+
+def _load_api_keys() -> list:
+    try:
+        if APIKEYS_FILE.exists():
+            return json.loads(APIKEYS_FILE.read_text())
+    except (OSError, ValueError):
+        pass
+    return []
+
+
+def _save_api_keys(keys: list) -> None:
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = APIKEYS_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(keys, indent=2))
+    os.chmod(tmp, 0o600)
+    tmp.replace(APIKEYS_FILE)
+
+
+def generate_api_key() -> str:
+    return "".join(secrets.choice(API_KEY_ALPHABET) for _ in range(API_KEY_LEN))
+
+
+def _find_api_key(key: str) -> Optional[dict]:
+    """Look up a key by its secret value (constant-time compare per record)."""
+    found = None
+    for rec in _load_api_keys():
+        if hmac.compare_digest(rec.get("key", ""), key):
+            found = rec
+    return found
+
+
+def _find_api_key_by_id(key_id: str) -> Optional[dict]:
+    for rec in _load_api_keys():
+        if rec.get("id") == key_id:
+            return rec
+    return None
+
+
+def _key_permissions(rec: dict) -> dict:
+    return {p: bool(rec.get("permissions", {}).get(p)) for p in KEY_PERMS}
+
 
 def _stored_password_hash() -> str:
     try:
@@ -133,22 +185,29 @@ def verify_password(password: str, stored: str) -> bool:
         return False
 
 
-def _sign_session(expiry: int) -> str:
-    sig = hmac.new(SESSION_SECRET.encode(), str(expiry).encode(), hashlib.sha256).hexdigest()
-    return f"{expiry}.{sig}"
+def _sign_session(expiry: int, role: str = "root", key_id: str = "") -> str:
+    payload = f"{expiry}.{role}.{key_id}"
+    sig = hmac.new(SESSION_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
+    return f"{payload}.{sig}"
 
 
-def _session_valid(cookie: Optional[str]) -> bool:
-    if not cookie or "." not in cookie:
-        return False
-    expiry, _, sig = cookie.partition(".")
+def _session_auth(cookie: Optional[str]) -> Optional[dict]:
+    """Validate a session cookie; return {'role', 'key_id'} or None."""
+    if not cookie or cookie.count(".") != 3:
+        return None
+    expiry, role, key_id, sig = cookie.split(".")
     try:
         if int(expiry) < time.time():
-            return False
+            return None
     except ValueError:
-        return False
-    expected = hmac.new(SESSION_SECRET.encode(), expiry.encode(), hashlib.sha256).hexdigest()
-    return hmac.compare_digest(sig, expected)
+        return None
+    payload = f"{expiry}.{role}.{key_id}"
+    expected = hmac.new(SESSION_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(sig, expected):
+        return None
+    if role not in ("root", "key"):
+        return None
+    return {"role": role, "key_id": key_id}
 
 
 def _client_ip(request: Request) -> str:
@@ -163,29 +222,97 @@ def _client_ip(request: Request) -> str:
 app = FastAPI(title="filepeek")
 
 
-def _authorized(request) -> bool:
-    if _session_valid(request.cookies.get(SESSION_COOKIE)):
-        return True
-    if API_TOKEN:
-        header = request.headers.get("authorization", "")
-        if header.startswith("Bearer ") and hmac.compare_digest(header[7:], API_TOKEN):
-            return True
-    return False
+ROOT_AUTH = {"role": "root", "key_id": "", "permissions": dict(FULL_PERMS)}
+
+# Endpoints only the root user may touch (admin surface).
+ROOT_ONLY_PREFIXES = ("/api/backup", "/api/keys")
+ROOT_ONLY_PATHS = {"/change-password"}
+
+# Permission each (method, path) needs. DELETE /api/delete is decided in its
+# handler (delete_files vs delete_folders depends on the target).
+PERM_RULES = {
+    ("GET", "/api/tree"): "view",
+    ("GET", "/api/search/filename"): "view",
+    ("GET", "/api/nts"): "view",
+    ("GET", "/api/permlinks"): "view",
+    ("GET", "/api/bookmarks"): "view",
+    ("GET", "/api/recents"): "view",
+    ("GET", "/api/file"): "read",
+    ("GET", "/api/download"): "read",
+    ("GET", "/api/raw"): "read",
+    ("GET", "/view"): "read",
+    ("GET", "/api/search/content"): "read",
+    ("POST", "/api/zip"): "read",
+    ("GET", "/api/zip/status"): "read",
+    ("GET", "/api/zip/download"): "read",
+    ("DELETE", "/api/zip"): "read",
+    ("POST", "/api/recents"): "read",
+    ("PUT", "/api/file"): "write",
+    ("POST", "/api/create"): "write",
+    ("POST", "/api/upload"): "write",
+    ("POST", "/api/rename"): "write",
+    ("POST", "/api/copy"): "write",
+    ("POST", "/api/move"): "write",
+    ("POST", "/api/permlinks"): "write",
+    ("DELETE", "/api/permlinks"): "write",
+    ("POST", "/api/bookmarks"): "write",
+    ("DELETE", "/api/bookmarks"): "write",
+    ("DELETE", "/api/recents"): "write",
+}
+
+
+def _resolve_auth(request) -> Optional[dict]:
+    """Who is calling: root, an API key, or nobody. Returns
+    {'role', 'key_id', 'permissions'} or None if unauthenticated."""
+    if not AUTH_ENABLED:
+        return dict(ROOT_AUTH)
+    sess = _session_auth(request.cookies.get(SESSION_COOKIE))
+    if sess:
+        if sess["role"] == "root":
+            return dict(ROOT_AUTH)
+        rec = _find_api_key_by_id(sess["key_id"])  # deleted key → session dies
+        if rec:
+            return {"role": "key", "key_id": rec["id"], "permissions": _key_permissions(rec)}
+        return None
+    header = request.headers.get("authorization", "")
+    if header.startswith("Bearer "):
+        bearer = header[7:]
+        if API_TOKEN and hmac.compare_digest(bearer, API_TOKEN):
+            return dict(ROOT_AUTH)
+        rec = _find_api_key(bearer)
+        if rec:
+            return {"role": "key", "key_id": rec["id"], "permissions": _key_permissions(rec)}
+    return None
+
+
+def _auth_ctx(request) -> dict:
+    return getattr(request.state, "auth", None) or dict(ROOT_AUTH)
 
 
 @app.middleware("http")
 async def require_auth(request, call_next):
     path = request.url.path
+    auth = _resolve_auth(request)
+    request.state.auth = auth
     if AUTH_ENABLED and path not in AUTH_EXEMPT_PATHS:
-        if not _authorized(request):
+        if auth is None:
             if "text/html" in request.headers.get("accept", ""):
                 return RedirectResponse("/login", status_code=303)
             return JSONResponse({"detail": "Not authenticated"}, status_code=401)
         # Signed in on a temporary password → force a change before anything else.
-        if PASSWORD_MUST_CHANGE and path != "/change-password":
+        if PASSWORD_MUST_CHANGE and auth["role"] == "root" and path != "/change-password":
             if "text/html" in request.headers.get("accept", ""):
                 return RedirectResponse("/change-password", status_code=303)
             return JSONResponse({"detail": "Password change required"}, status_code=403)
+        if auth["role"] != "root":
+            if path in ROOT_ONLY_PATHS or path.startswith(ROOT_ONLY_PREFIXES):
+                return JSONResponse({"detail": "Root access required"}, status_code=403)
+            perm = PERM_RULES.get((request.method, path))
+            if perm and not auth["permissions"].get(perm):
+                return JSONResponse(
+                    {"detail": f"Your API key does not have '{perm}' permission"},
+                    status_code=403,
+                )
     return await call_next(request)
 
 
@@ -411,23 +538,23 @@ def index():
     return (STATIC_DIR / "index.html").read_text().replace("__FILEPEEK_ROOT__", str(ROOT))
 
 
-LOGIN_PAGE = """<!doctype html>
+AUTH_PAGE_SHELL = """<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex">
-<title>filepeek — log in</title>
+<title>__TITLE__</title>
 <link rel="icon" type="image/svg+xml" href="/static/logo.svg">
 <style>
   /* family "ink" tokens — keep in sync with webterm's static/style.css :root palette */
   :root {
-    --bg: #1e293b; --card: #fff; --fg: #1e293b; --border: #cbd5e1;
+    --bg: #1e293b; --card: #fff; --fg: #1e293b; --border: #cbd5e1; --dim: #64748b;
     --accent: #2563eb; --accent-hover: #1d4ed8; --danger: #dc2626;
   }
   @media (prefers-color-scheme: dark) {
     :root {
-      --bg: #0b0e14; --card: #11151f; --fg: #d7dce5; --border: #232a3a;
+      --bg: #0b0e14; --card: #11151f; --fg: #d7dce5; --border: #232a3a; --dim: #8b93a7;
       --accent: #2563eb; --accent-hover: #1d4ed8; --danger: #e05c5c;
     }
   }
@@ -443,18 +570,48 @@ LOGIN_PAGE = """<!doctype html>
            background: var(--accent); color: #fff; font-size: 1rem; cursor: pointer; }
   button:hover { background: var(--accent-hover); }
   .err { color: var(--danger); font-size: .875rem; min-height: 1.25rem; margin: .5rem 0 0; }
+  .tabs { display: flex; gap: 0; margin-bottom: 1rem; border: 1px solid var(--border);
+          border-radius: 8px; overflow: hidden; }
+  .tabs button { margin: 0; border-radius: 0; background: var(--card); color: var(--dim);
+                 font-size: .875rem; padding: .5rem; }
+  .tabs button.active { background: var(--accent); color: #fff; }
+  .tabs button:hover:not(.active) { background: var(--card); color: var(--fg); }
 </style>
 </head>
 <body>
-  <form class="card" method="post" action="/login">
+__CARD__
+</body>
+</html>"""
+
+LOGIN_CARD = """  <form class="card" method="post" action="/login">
     <img src="/static/logo.svg" alt="">
     <h1>filepeek</h1>
-    <input type="password" name="password" placeholder="Password" autofocus autocomplete="current-password">
+    <div class="tabs">
+      <button type="button" id="tab-root" class="active" onclick="setMode('root')">Root user</button>
+      <button type="button" id="tab-key" onclick="setMode('key')">API key</button>
+    </div>
+    <input type="password" name="password" id="password" placeholder="Password" autofocus autocomplete="current-password">
+    <input type="text" name="apikey" id="apikey" placeholder="API key" spellcheck="false"
+           autocomplete="off" style="display:none">
     <p class="err">__ERROR__</p>
     <button type="submit">Log in</button>
   </form>
-</body>
-</html>"""
+  <script>
+    function setMode(mode) {
+      const root = mode === 'root';
+      document.getElementById('tab-root').classList.toggle('active', root);
+      document.getElementById('tab-key').classList.toggle('active', !root);
+      document.getElementById('password').style.display = root ? '' : 'none';
+      document.getElementById('apikey').style.display = root ? 'none' : '';
+      const active = document.getElementById(root ? 'password' : 'apikey');
+      const other = document.getElementById(root ? 'apikey' : 'password');
+      other.value = '';
+      active.focus();
+    }
+    if (document.getElementById('apikey').value) setMode('key');
+  </script>"""
+
+LOGIN_PAGE = AUTH_PAGE_SHELL.replace("__TITLE__", "filepeek — log in").replace("__CARD__", LOGIN_CARD)
 
 
 @app.get("/login", response_class=HTMLResponse)
@@ -465,7 +622,7 @@ def login_page():
 
 
 @app.post("/login")
-def login(request: Request, password: str = Form("")):
+def login(request: Request, password: str = Form(""), apikey: str = Form("")):
     if not AUTH_ENABLED:
         return RedirectResponse("/", status_code=303)
     ip = _client_ip(request)
@@ -476,17 +633,28 @@ def login(request: Request, password: str = Form("")):
             LOGIN_PAGE.replace("__ERROR__", "Too many attempts — try again in a few minutes."),
             status_code=429,
         )
-    if not (PASSWORD_HASH and verify_password(password, PASSWORD_HASH)):
+
+    role, key_id, error = "", "", "Wrong password."
+    apikey = apikey.strip()
+    if apikey:
+        error = "Unknown API key."
+        rec = _find_api_key(apikey)
+        if rec:
+            role, key_id = "key", rec["id"]
+    elif PASSWORD_HASH and verify_password(password, PASSWORD_HASH):
+        role = "root"
+
+    if not role:
         time.sleep(0.5)  # slow down brute force; sync handler so the event loop is unaffected
         count += 1
         locked = now + LOGIN_LOCKOUT_SECONDS if count >= LOGIN_MAX_FAILURES else 0.0
         _login_failures[ip] = (count, locked)
-        return HTMLResponse(LOGIN_PAGE.replace("__ERROR__", "Wrong password."), status_code=401)
+        return HTMLResponse(LOGIN_PAGE.replace("__ERROR__", error), status_code=401)
     _login_failures.pop(ip, None)
     resp = RedirectResponse("/", status_code=303)
     secure = request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"
     resp.set_cookie(
-        SESSION_COOKIE, _sign_session(int(now) + SESSION_TTL),
+        SESSION_COOKIE, _sign_session(int(now) + SESSION_TTL, role, key_id),
         max_age=SESSION_TTL, httponly=True, samesite="lax", secure=secure,
     )
     return resp
@@ -499,17 +667,7 @@ def logout():
     return resp
 
 
-CHANGE_PAGE = LOGIN_PAGE.replace(
-    "<title>filepeek — log in</title>", "<title>filepeek — set a new password</title>"
-).replace(
-    """  <form class="card" method="post" action="/login">
-    <img src="/static/logo.svg" alt="">
-    <h1>filepeek</h1>
-    <input type="password" name="password" placeholder="Password" autofocus autocomplete="current-password">
-    <p class="err">__ERROR__</p>
-    <button type="submit">Log in</button>
-  </form>""",
-    """  <form class="card" method="post" action="/change-password">
+CHANGE_CARD = """  <form class="card" method="post" action="/change-password">
     <img src="/static/logo.svg" alt="">
     <h1>Set a new password</h1>
     <p class="err" style="color:var(--fg);min-height:0;margin:0 0 1rem">You're signed in with a temporary password. Choose a new one to continue.</p>
@@ -517,15 +675,18 @@ CHANGE_PAGE = LOGIN_PAGE.replace(
     <input type="password" name="confirm" placeholder="Confirm new password" autocomplete="new-password" style="margin-top:.5rem">
     <p class="err">__ERROR__</p>
     <button type="submit">Save and continue</button>
-  </form>""",
-)
+  </form>"""
+
+CHANGE_PAGE = AUTH_PAGE_SHELL.replace(
+    "__TITLE__", "filepeek — set a new password"
+).replace("__CARD__", CHANGE_CARD)
 
 
 @app.get("/change-password", response_class=HTMLResponse)
 def change_password_page(request: Request):
     if not AUTH_ENABLED or not PASSWORD_MUST_CHANGE:
         return RedirectResponse("/", status_code=303)
-    if not _authorized(request):
+    if _resolve_auth(request) is None:
         return RedirectResponse("/login", status_code=303)
     return CHANGE_PAGE.replace("__ERROR__", "")
 
@@ -535,7 +696,7 @@ def change_password(request: Request, password: str = Form(""), confirm: str = F
     global PASSWORD_HASH, PASSWORD_MUST_CHANGE
     if not AUTH_ENABLED or not PASSWORD_MUST_CHANGE:
         return RedirectResponse("/", status_code=303)
-    if not _authorized(request):
+    if _resolve_auth(request) is None:
         return RedirectResponse("/login", status_code=303)
     if len(password) < MIN_PASSWORD_LEN:
         return HTMLResponse(
@@ -552,6 +713,102 @@ def change_password(request: Request, password: str = Form(""), confirm: str = F
     PASSWORD_HASH = new_hash
     PASSWORD_MUST_CHANGE = False
     return RedirectResponse("/", status_code=303)
+
+
+@app.get("/api/me")
+def whoami(request: Request):
+    """Who am I and what can I do — the UI adapts its buttons to this."""
+    auth = _auth_ctx(request)
+    return {
+        "role": auth["role"],
+        "permissions": auth["permissions"],
+        "auth_enabled": AUTH_ENABLED,
+    }
+
+
+# --- API key management (root only; enforced by the auth middleware) --------
+
+class KeyPermissions(BaseModel):
+    view: bool = True
+    read: bool = False
+    write: bool = False
+    delete_folders: bool = False
+    delete_files: bool = False
+
+
+class KeyCreateBody(BaseModel):
+    label: str = ""
+    permissions: KeyPermissions = KeyPermissions()
+
+
+class KeyUpdateBody(BaseModel):
+    id: str
+    label: Optional[str] = None
+    permissions: Optional[KeyPermissions] = None
+
+
+@app.get("/api/keys")
+def list_api_keys():
+    return {"keys": _load_api_keys()}
+
+
+@app.post("/api/keys")
+def create_api_key(body: KeyCreateBody):
+    keys = _load_api_keys()
+    existing = {k["key"] for k in keys}
+    key = generate_api_key()
+    while key in existing:
+        key = generate_api_key()
+    rec = {
+        "id": secrets.token_hex(4),
+        "key": key,
+        "label": body.label.strip()[:80],
+        "permissions": body.permissions.model_dump(),
+        "created": datetime.now().isoformat(timespec="seconds"),
+    }
+    keys.append(rec)
+    _save_api_keys(keys)
+    return rec
+
+
+@app.put("/api/keys")
+def update_api_key(body: KeyUpdateBody):
+    keys = _load_api_keys()
+    for rec in keys:
+        if rec["id"] == body.id:
+            if body.label is not None:
+                rec["label"] = body.label.strip()[:80]
+            if body.permissions is not None:
+                rec["permissions"] = body.permissions.model_dump()
+            _save_api_keys(keys)
+            return rec
+    raise HTTPException(404, "Unknown API key id")
+
+
+@app.delete("/api/keys")
+def delete_api_key(id: str):
+    keys = _load_api_keys()
+    kept = [k for k in keys if k["id"] != id]
+    if len(kept) == len(keys):
+        raise HTTPException(404, "Unknown API key id")
+    _save_api_keys(kept)  # sessions bound to this key stop resolving immediately
+    return {"ok": True}
+
+
+def _deny_root_level_folder(request: Request, target: Path, is_dir: bool) -> None:
+    """API-key users may not create folders directly under the root — neither
+    explicitly nor implicitly via a nested path whose top-level folder is new."""
+    if _auth_ctx(request)["role"] != "key":
+        return
+    try:
+        parts = target.relative_to(ROOT).parts
+    except ValueError:
+        return
+    if not parts:
+        return
+    creates_top = (is_dir if len(parts) == 1 else not (ROOT / parts[0]).exists())
+    if creates_top:
+        raise HTTPException(403, "API key users cannot create folders at the root level")
 
 
 @app.get("/api/tree")
@@ -631,10 +888,11 @@ class CreateBody(BaseModel):
 
 
 @app.post("/api/create")
-def create_item(body: CreateBody):
+def create_item(body: CreateBody, request: Request):
     p = safe_path(body.path)
     if p.exists():
         raise HTTPException(409, "Already exists")
+    _deny_root_level_folder(request, p, body.is_dir)
     p.parent.mkdir(parents=True, exist_ok=True)
     if body.is_dir:
         p.mkdir()
@@ -666,12 +924,15 @@ def rename_item(body: RenameBody):
 
 
 @app.delete("/api/delete")
-def delete_item(path: str):
+def delete_item(path: str, request: Request):
     p = safe_path(path)
     if p == ROOT:
         raise HTTPException(403, "Cannot delete the root folder")
     if not p.exists():
         raise HTTPException(404, "Not found")
+    need = "delete_folders" if p.is_dir() else "delete_files"
+    if not _auth_ctx(request)["permissions"].get(need):
+        raise HTTPException(403, f"Your API key does not have '{need}' permission")
     if p.is_dir():
         shutil.rmtree(p)
     else:
@@ -730,8 +991,9 @@ def _remove_existing(dest: Path) -> None:
 
 
 @app.post("/api/copy")
-def copy_item(body: TransferBody):
+def copy_item(body: TransferBody, request: Request):
     src, dest = _prepare_transfer(body)
+    _deny_root_level_folder(request, dest, src.is_dir())
     if dest.exists():
         _remove_existing(dest)
     if src.is_dir():
@@ -742,8 +1004,9 @@ def copy_item(body: TransferBody):
 
 
 @app.post("/api/move")
-def move_item(body: TransferBody):
+def move_item(body: TransferBody, request: Request):
     src, dest = _prepare_transfer(body)
+    _deny_root_level_folder(request, dest, src.is_dir())
     if dest.exists():
         _remove_existing(dest)
     shutil.move(str(src), str(dest))
@@ -756,12 +1019,13 @@ class SaveBody(BaseModel):
 
 
 @app.put("/api/file")
-def save_file(body: SaveBody):
+def save_file(body: SaveBody, request: Request):
     p = safe_path(body.path)
     if p.is_dir():
         raise HTTPException(400, "Is a directory")
     if len(body.content.encode("utf-8")) > MAX_TRANSFER_BYTES:
         raise HTTPException(413, f"Content exceeds {MAX_TRANSFER_BYTES} bytes")
+    _deny_root_level_folder(request, p, False)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(body.content, encoding="utf-8")
     return file_info(p)
@@ -769,6 +1033,7 @@ def save_file(body: SaveBody):
 
 @app.post("/api/upload")
 async def upload_file(
+    request: Request,
     file: UploadFile = File(...),
     target_dir: str = Form(""),
     overwrite: bool = Form(False),
@@ -780,6 +1045,7 @@ async def upload_file(
         raise HTTPException(400, "Target is not a directory")
 
     dest = safe_path(f"{target_dir}/{file.filename}" if target_dir else file.filename)
+    _deny_root_level_folder(request, dest, False)
     if dest.exists() and not overwrite:
         raise HTTPException(409, "File already exists")
 

@@ -42,6 +42,7 @@ def root(tmp_path, monkeypatch):
     monkeypatch.setattr(filepeek, "RECENTS_FILE", state / "recents.json")
     monkeypatch.setattr(filepeek, "BACKUP_CONFIG_FILE", state / "backup_config.json")
     monkeypatch.setattr(filepeek, "BACKUP_LOG_FILE", state / "backup.log")
+    monkeypatch.setattr(filepeek, "APIKEYS_FILE", state / "apikeys.json")
     return root
 
 
