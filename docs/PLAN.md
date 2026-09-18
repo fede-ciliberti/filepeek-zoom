@@ -61,6 +61,8 @@ Implementado como **click-to-expand** (opción b): cada fence ```` ```mermaid ``
 
 > Nota de diseño: se implementó como **overlay/lightbox autocontenido** (no reusando `#mermaid-view`) para no acoplarse a la lógica de paneles del visor. Verificado: inline renderizado (cursor `zoom-in`), click abre el lightbox con 4 controles, wheel-zoom cambia la escala, `Escape` cierra.
 
+> **Responsive y presentación**: el lightbox **re-encaja** el diagrama al redimensionar la ventana (debounced; respeta el zoom/pan manual del usuario vía el flag `_pzDirty`), **bloquea el scroll del body** mientras está abierto, y el overlay usa fondo `rgba(0,0,0,.8)` + `backdrop-blur`. El canvas del lightbox tiene **fondo claro** (`bg-slate-50 dark:bg-ink-bg`): sobre el damero oscuro los conectores del diagrama quedaban casi invisibles.
+
 ### M3 — Mejoras opcionales ⏳
 - Botón "reset view" / "fit".
 - Fullscreen nativo (API Fullscreen).

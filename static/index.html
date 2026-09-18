@@ -507,9 +507,9 @@ if (localStorage.getItem("filepeek-theme") === "dark" ||
 <div id="hover-tip"
      class="hidden fixed z-50 pointer-events-none bg-slate-900 dark:bg-ink-bg text-white text-xs rounded px-3 py-2 shadow-xl max-w-xs leading-relaxed"></div>
 
-<div id="mermaid-lightbox" class="hidden fixed inset-0 z-50 bg-black/70 items-center justify-center p-3">
+<div id="mermaid-lightbox" class="hidden fixed inset-0 z-50 bg-black/80 backdrop-blur-md items-center justify-center p-3">
   <div class="relative w-full h-full rounded-lg overflow-hidden shadow-2xl">
-    <div id="mermaid-lightbox-view" class="w-full h-full"></div>
+    <div id="mermaid-lightbox-view" class="w-full h-full p-4 bg-slate-50 dark:bg-ink-bg"></div>
     <button id="mermaid-lightbox-close" title="Cerrar (Esc)"
             class="absolute top-3 right-3 w-9 h-9 rounded-full bg-slate-800/80 text-white text-xl leading-none hover:bg-slate-700">×</button>
   </div>
@@ -565,6 +565,7 @@ let _lightboxPZ = null;
 
 // Prepara el SVG de mermaid para pan/zoom: mermaid no trae viewBox (svg-pan-zoom lo
 // necesita) y hay que hacerlo llenar el contenedor. Devuelve la instancia de svg-pan-zoom.
+const _pzDirty = new WeakMap();
 function applyMermaidPanZoom(container) {
   const svgEl = container.querySelector("svg");
   if (!svgEl || !window.svgPanZoom) return null;
@@ -577,11 +578,33 @@ function applyMermaidPanZoom(container) {
   svgEl.style.width = "100%";
   svgEl.style.height = "100%";
   svgEl.style.maxWidth = "none";
+  _pzDirty.set(svgEl, false);
+  const markDirty = () => _pzDirty.set(svgEl, true);
+  svgEl.addEventListener("wheel", markDirty, { passive: true });
+  svgEl.addEventListener("mousedown", markDirty);
+  svgEl.addEventListener("touchstart", markDirty, { passive: true });
   return svgPanZoom(svgEl, {
     controlIconsEnabled: true, fit: true, center: true,
     minZoom: 0.2, maxZoom: 12,
   });
 }
+
+// Responsive: al cambiar el tamaño de la ventana, re-encaja el diagrama (salvo que el
+// usuario ya lo haya movido a mano, para no perderle el zoom/pan).
+let _pzResizeTimer = null;
+window.addEventListener("resize", () => {
+  clearTimeout(_pzResizeTimer);
+  _pzResizeTimer = setTimeout(() => {
+    for (const [pz, container] of [[_mermaidPZ, $("mermaid-view")], [_lightboxPZ, $("mermaid-lightbox-view")]]) {
+      if (!pz) continue;
+      try {
+        pz.resize();
+        const el = container.querySelector("svg");
+        if (el && !_pzDirty.get(el)) { pz.fit(); pz.center(); }
+      } catch (e) { /* best-effort — el diagrama puede no estar listo */ }
+    }
+  }, 150);
+});
 
 // Render Mermaid source into #mermaid-view (async — mermaid.render returns a promise).
 async function renderMermaid(code) {
@@ -605,6 +628,7 @@ async function openMermaidLightbox(code) {
   const view = $("mermaid-lightbox-view");
   overlay.classList.remove("hidden");
   overlay.classList.add("flex");
+  document.body.style.overflow = "hidden";
   view.innerHTML = '<div class="text-slate-400 text-xs">Rendering diagram…</div>';
   try {
     const { svg } = await mermaid.render("mmd-lb-" + (++_mermaidSeq), code || "");
@@ -621,6 +645,7 @@ function closeMermaidLightbox() {
   if (overlay.classList.contains("hidden")) return;
   overlay.classList.add("hidden");
   overlay.classList.remove("flex");
+  document.body.style.overflow = "";
   if (_lightboxPZ) { _lightboxPZ.destroy(); _lightboxPZ = null; }
   $("mermaid-lightbox-view").innerHTML = "";
 }
