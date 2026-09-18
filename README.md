@@ -17,7 +17,7 @@ Agregar a los diagramas Mermaid la misma capa de navegación que usa [Mermaid Li
 | Hito | Qué | Estado |
 |---|---|---|
 | M1 | Pan/zoom en `.mmd` standalone (panel a pantalla completa) | ✅ |
-| M2 | Diagramas inline en Markdown → click-to-expand con pan/zoom | ⏳ |
+| M2 | Diagramas inline en Markdown → click-to-expand con pan/zoom | ✅ |
 | M3 | Controles extra / fullscreen / temas | ⏳ |
 
 Detalle completo en **[`docs/PLAN.md`](docs/PLAN.md)**.

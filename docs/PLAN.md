@@ -56,12 +56,10 @@ En `renderMermaid()`, después de `view.innerHTML = svg`, aplicar `svgPanZoom` a
 
 **Resultado**: abrís un `.mmd` → diagrama a pantalla completa con arrastre + zoom.
 
-### M2 — Diagramas inline en Markdown ⏳
-En `renderMermaidFences()`, hoy cada fence se reemplaza por un `<div>` con el SVG estático. Opciones (ver §5):
-- **(a)** aplicar `svg-pan-zoom` a cada diagrama inline; o
-- **(b)** **click-to-expand**: click en el diagrama → se abre en `#mermaid-view` (panel full) con pan/zoom.
+### M2 — Diagramas inline en Markdown ✅
+Implementado como **click-to-expand** (opción b): cada fence ```` ```mermaid ```` en Markdown se renderiza inline y, al hacer click, abre un **lightbox a pantalla completa** con el diagrama + pan/zoom (reusa el helper `applyMermaidPanZoom`). Cierra con el botón ×, click en el fondo, o `Escape`. El inline queda legible; el full es para navegar.
 
-Recomendado: **(b)**. El inline queda legible; el full es para navegar.
+> Nota de diseño: se implementó como **overlay/lightbox autocontenido** (no reusando `#mermaid-view`) para no acoplarse a la lógica de paneles del visor. Verificado: inline renderizado (cursor `zoom-in`), click abre el lightbox con 4 controles, wheel-zoom cambia la escala, `Escape` cierra.
 
 ### M3 — Mejoras opcionales ⏳
 - Botón "reset view" / "fit".
@@ -78,7 +76,7 @@ Recomendado: **(b)**. El inline queda legible; el full es para navegar.
 |---|---|---|
 | Librería de pan/zoom | `svg-pan-zoom` (la de Mermaid Live) | ✅ tomada |
 | `.mmd` standalone | Panel full con pan/zoom | ✅ M1 |
-| Inline en Markdown | (a) pan/zoom en el lugar vs (b) click-to-expand | ⏳ **abierta** — se recomienda (b) |
+| Inline en Markdown | (b) click-to-expand (lightbox overlay) | ✅ tomada |
 | Dónde vive `svg-pan-zoom` | CDN (consistente con Mermaid) vs vendor en `static/vendor/` | ⏳ abierta — CDN por simplicidad |
 | Botones de control | `controlIconsEnabled: true` (zoom in/out/reset) | ✅ M1 |
 | Persistencia de vista | no en M1; evaluar en M3 | ⏳ |
@@ -86,7 +84,7 @@ Recomendado: **(b)**. El inline queda legible; el full es para navegar.
 ## 6. Roadmap
 
 1. **M1** — pan/zoom standalone. *(hecho)*
-2. **M2** — click-to-expand para diagramas inline. *(siguiente)*
+2. **M2** — click-to-expand para diagramas inline. *(hecho)*
 3. **M3** — pulido: reset/fit, fullscreen, tema, persistencia.
 4. **Opcional** — PR al upstream `thrinz/filepeek` (el patch es chico y genérico; podría interesarle).
 
