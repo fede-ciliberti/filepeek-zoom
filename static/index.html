@@ -22,6 +22,7 @@ if (localStorage.getItem("filepeek-theme") === "dark" ||
 </script>
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.2/dist/svg-pan-zoom.min.js"></script>
 <!-- CodeMirror 5: syntax-highlighted editing for dev file types (css/html/js/jsx/ts/tsx/sql/sh) -->
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/lib/codemirror.min.css">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/theme/material-darker.min.css">
@@ -540,6 +541,7 @@ function permGateToolbar() {
 
 if (window.mermaid) mermaid.initialize({ startOnLoad: false });
 let _mermaidSeq = 0;
+let _mermaidPZ = null;
 // Render Mermaid source into #mermaid-view (async — mermaid.render returns a promise).
 async function renderMermaid(code) {
   const view = $("mermaid-view");
@@ -548,6 +550,24 @@ async function renderMermaid(code) {
   try {
     const { svg } = await mermaid.render("mmd-" + (++_mermaidSeq), code || "");
     view.innerHTML = svg;
+    try {
+      if (_mermaidPZ) { _mermaidPZ.destroy(); _mermaidPZ = null; }
+      const svgEl = view.querySelector("svg");
+      if (svgEl && window.svgPanZoom) {
+        // mermaid sale con width="100%" y sin height; svg-pan-zoom necesita un viewBox.
+        const bb = svgEl.getBBox();
+        if (bb && bb.width && bb.height) {
+          svgEl.setAttribute("viewBox", `${bb.x} ${bb.y} ${bb.width} ${bb.height}`);
+          svgEl.setAttribute("width", String(bb.width));
+          svgEl.setAttribute("height", String(bb.height));
+        }
+        svgEl.style.maxWidth = "none";
+        _mermaidPZ = svgPanZoom(svgEl, {
+          controlIconsEnabled: true, fit: true, center: true,
+          minZoom: 0.2, maxZoom: 12,
+        });
+      }
+    } catch (e) { /* pan/zoom es best-effort — si falla, queda el diagrama estático */ }
   } catch (e) {
     view.innerHTML = `<pre class="whitespace-pre-wrap text-red-700 dark:text-red-400 text-xs">${escapeHtml(String(e && e.message || e))}</pre>`;
   }
