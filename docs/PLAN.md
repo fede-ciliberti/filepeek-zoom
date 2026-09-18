@@ -130,13 +130,16 @@ async function renderMermaid(code) {
       if (_mermaidPZ) { _mermaidPZ.destroy(); _mermaidPZ = null; }
       const svgEl = view.querySelector("svg");
       if (svgEl && window.svgPanZoom) {
-        // mermaid sale con width="100%" y sin height; svg-pan-zoom necesita un viewBox.
+        // mermaid sale con width="100%" y sin viewBox; svg-pan-zoom necesita un viewBox.
         const bb = svgEl.getBBox();
         if (bb && bb.width && bb.height) {
           svgEl.setAttribute("viewBox", `${bb.x} ${bb.y} ${bb.width} ${bb.height}`);
-          svgEl.setAttribute("width", String(bb.width));
-          svgEl.setAttribute("height", String(bb.height));
         }
+        // Llenar el panel para que el pan/zoom use toda el área disponible.
+        svgEl.setAttribute("width", "100%");
+        svgEl.setAttribute("height", "100%");
+        svgEl.style.width = "100%";
+        svgEl.style.height = "100%";
         svgEl.style.maxWidth = "none";
         _mermaidPZ = svgPanZoom(svgEl, {
           controlIconsEnabled: true, fit: true, center: true,
@@ -148,7 +151,7 @@ async function renderMermaid(code) {
 }
 ```
 
-> **Gotcha descubierto en M1**: `mermaid.render()` devuelve un `<svg width="100%">` **sin `height` ni `viewBox`** (en esta versión de Mermaid). Sin `viewBox`, svg-pan-zoom no puede calcular el `fit` y los controles quedan fuera de la vista. El fix es setear `viewBox`/`width`/`height` desde `svgEl.getBBox()` **antes** de inicializar svg-pan-zoom. Verificado: diagrama fit + controles visibles + wheel-zoom cambia la escala.
+> **Gotchas descubiertos en M1**: (1) `mermaid.render()` devuelve un `<svg width="100%">` **sin `height` ni `viewBox`**. Sin `viewBox`, svg-pan-zoom no calcula el `fit` y los controles quedan fuera de la vista. Se setea `viewBox` desde `svgEl.getBBox()`. (2) El SVG debe **llenar el panel** (`width/height: 100%`); si no, queda del tamaño natural y el pan/zoom no usa toda el área (queda scale 1 y el diagrama recortado). (3) Se agregó un **damero suave** por CSS en `#mermaid-view` para visualizar el canvas. Verificado: canvas lleno, diagrama completo, controles visibles, wheel-zoom cambia la escala.
 
 ### Referencia — `PanZoomState` de Mermaid Live (para M2/M3)
 Mermaid Live envuelve `svg-pan-zoom` + `hammerjs` en una clase `PanZoomState` (con `zoomIn/zoomOut/reset/restorePanZoom`). Es un buen modelo si en M3 queremos persistir la vista o agregar botones propios.

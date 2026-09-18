@@ -23,6 +23,16 @@ if (localStorage.getItem("filepeek-theme") === "dark" ||
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.2/dist/svg-pan-zoom.min.js"></script>
+<style>
+  /* Damero suave: hace visible el área del diagrama (canvas de pan/zoom). */
+  #mermaid-view {
+    background-image:
+      linear-gradient(45deg, rgba(120,130,150,.09) 25%, transparent 25%, transparent 75%, rgba(120,130,150,.09) 75%),
+      linear-gradient(45deg, rgba(120,130,150,.09) 25%, transparent 25%, transparent 75%, rgba(120,130,150,.09) 75%);
+    background-size: 22px 22px;
+    background-position: 0 0, 11px 11px;
+  }
+</style>
 <!-- CodeMirror 5: syntax-highlighted editing for dev file types (css/html/js/jsx/ts/tsx/sql/sh) -->
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/lib/codemirror.min.css">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/theme/material-darker.min.css">
@@ -554,13 +564,16 @@ async function renderMermaid(code) {
       if (_mermaidPZ) { _mermaidPZ.destroy(); _mermaidPZ = null; }
       const svgEl = view.querySelector("svg");
       if (svgEl && window.svgPanZoom) {
-        // mermaid sale con width="100%" y sin height; svg-pan-zoom necesita un viewBox.
+        // mermaid sale con width="100%" y sin viewBox; svg-pan-zoom necesita un viewBox.
         const bb = svgEl.getBBox();
         if (bb && bb.width && bb.height) {
           svgEl.setAttribute("viewBox", `${bb.x} ${bb.y} ${bb.width} ${bb.height}`);
-          svgEl.setAttribute("width", String(bb.width));
-          svgEl.setAttribute("height", String(bb.height));
         }
+        // Llenar el panel para que el pan/zoom use toda el área disponible.
+        svgEl.setAttribute("width", "100%");
+        svgEl.setAttribute("height", "100%");
+        svgEl.style.width = "100%";
+        svgEl.style.height = "100%";
         svgEl.style.maxWidth = "none";
         _mermaidPZ = svgPanZoom(svgEl, {
           controlIconsEnabled: true, fit: true, center: true,
