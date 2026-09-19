@@ -21,6 +21,7 @@ if (localStorage.getItem("filepeek-theme") === "dark" ||
   document.documentElement.classList.add("dark");
 </script>
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked-gfm-heading-id/lib/index.umd.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.2/dist/svg-pan-zoom.min.js"></script>
 <style>
@@ -559,6 +560,7 @@ function permGateToolbar() {
 }
 
 if (window.mermaid) mermaid.initialize({ startOnLoad: false });
+if (window.markedGfmHeadingId) marked.use(markedGfmHeadingId.gfmHeadingId());
 let _mermaidSeq = 0;
 let _mermaidPZ = null;
 let _lightboxPZ = null;
@@ -654,6 +656,16 @@ $("mermaid-lightbox-close").addEventListener("click", closeMermaidLightbox);
 $("mermaid-lightbox").addEventListener("click", (e) => { if (e.target === e.currentTarget) closeMermaidLightbox(); });
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeMermaidLightbox(); });
 
+// Navegación in-app para links relativos del markdown: evita el reload completo
+// y mantiene el fragmento (#seccion) para scrollear dentro del preview.
+$("preview").addEventListener("click", (e) => {
+  const a = e.target.closest && e.target.closest("a[data-fp-path]");
+  if (!a || e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+  e.preventDefault();
+  _pendingHash = a.dataset.fpFrag || "";
+  openFromUrl(a.dataset.fpPath).catch(() => {});
+});
+
 // Replace ```mermaid fences in rendered markdown (marked emits
 // <pre><code class="language-mermaid">) with inline diagrams.
 // Click en un diagrama inline → se abre a pantalla completa con pan/zoom.
@@ -709,6 +721,8 @@ function rewriteRelativeLinks(container, basePath) {
     if (!href || skipLink.test(href)) continue;
     const { path, frag } = resolve(href);
     a.setAttribute("href", "/?path=" + encodeURIComponent(path) + frag);
+    a.dataset.fpPath = path;
+    a.dataset.fpFrag = frag;
   }
 
   for (const img of container.querySelectorAll("img[src]")) {
@@ -864,10 +878,11 @@ const escapeHtml = s => s.replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":
 
 // --- URL sync: keep ?path= in the address bar matching what's displayed ---
 let _suppressUrlSync = false;  // true while restoring state from a popstate event
+let _pendingHash = "";        // fragment to scroll to after rendering markdown
 function syncUrl(path) {
   if (_suppressUrlSync) return;
-  const url = path ? `/?path=${encodeURIComponent(path)}` : "/";
-  if (location.pathname + location.search !== url) history.pushState({ path }, "", url);
+  const url = path ? `/?path=${encodeURIComponent(path)}${_pendingHash}` : "/" + _pendingHash;
+  if (location.pathname + location.search + location.hash !== url) history.pushState({ path }, "", url);
 }
 
 async function loadTree(path = "", sort = state.sort) {
@@ -1148,6 +1163,8 @@ function showPanel(which) {
     $("preview").innerHTML = `<div class="markdown-body">${marked.parse(getCode() || "")}</div>`;
     rewriteRelativeLinks($("preview"), f.path);
     renderMermaidFences($("preview"));
+    const h = _pendingHash;
+    if (h) { _pendingHash = ""; requestAnimationFrame(() => scrollToHash(h)); }
   } else if (which === "html") {
     $("preview-iframe").srcdoc = getCode() || "";
   } else if (which === "csv") {
@@ -2289,13 +2306,29 @@ async function openFromUrl(path) {
   catch { await navigateToFile(path); }  // otherwise treat it as a file
 }
 
+function scrollToHash(hash) {
+  if (!hash) return;
+  let id = hash.slice(1);
+  try { id = decodeURIComponent(id); } catch {}
+  const el = document.getElementById(id);
+  if (el) {
+    const preview = $("preview");
+    const body = preview.querySelector(".markdown-body");
+    const top = el.offsetTop - (body ? body.offsetTop : preview.offsetTop);
+    const max = preview.scrollHeight - preview.clientHeight;
+    preview.scrollTo({ top: Math.min(top, max), behavior: "auto" });
+  }
+}
+
 window.addEventListener("popstate", async () => {
+  _pendingHash = location.hash || "";
   _suppressUrlSync = true;
   try { await openFromUrl(new URLSearchParams(location.search).get("path") || ""); }
   catch {} finally { _suppressUrlSync = false; }
 });
 
 initAuth();
+_pendingHash = location.hash || "";
 openFromUrl(new URLSearchParams(location.search).get("path") || "").catch(() => loadTree());
 loadPermlinks();
 loadBookmarks();
