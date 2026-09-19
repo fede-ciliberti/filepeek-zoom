@@ -4,6 +4,9 @@ __pycache__/
 .claude/settings.local.json
 .playwright-mcp/
 
+# OpenCode runtime state (continuation sessions, plans locales) — nunca al repo
+.omo/
+
 # Local marketing drafts — not part of the repo
 posts/
 bookmarks.json
