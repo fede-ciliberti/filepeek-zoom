@@ -674,6 +674,51 @@ async function renderMermaidFences(rootEl) {
   }
 }
 
+// Reescribe links e imágenes relativos del markdown para que usen las rutas
+// internas de filepeek (?path=... para navegar, /api/raw?path=... para imágenes).
+function rewriteRelativeLinks(container, basePath) {
+  const baseDir = (basePath || "").split("/").slice(0, -1).join("/");
+
+  // Dejamos intactos: vacíos, esquemas, protocol-relative, anclas puras,
+  // links que ya son de filepeek, y rutas de API.
+  const skipLink = /^(?:[a-z][a-z0-9+.-]*:|\/\/|#|\/\?path=|\/view\?path=|\/api\/)/i;
+  const skipImg = /^(?:[a-z][a-z0-9+.-]*:|\/\/|\/static\/|\/api\/)/i;
+
+  function resolve(rel) {
+    const hashIdx = rel.indexOf("#");
+    const frag = hashIdx >= 0 ? rel.slice(hashIdx) : "";
+    let path = hashIdx >= 0 ? rel.slice(0, hashIdx) : rel;
+
+    if (path.startsWith("/")) {
+      path = path.slice(1);
+    } else {
+      path = baseDir ? baseDir + "/" + path : path;
+    }
+
+    const parts = path.split("/").filter(p => p !== "" && p !== ".");
+    const norm = [];
+    for (const p of parts) {
+      if (p === "..") norm.pop();
+      else norm.push(p);
+    }
+    return { path: norm.join("/"), frag };
+  }
+
+  for (const a of container.querySelectorAll("a[href]")) {
+    const href = a.getAttribute("href");
+    if (!href || skipLink.test(href)) continue;
+    const { path, frag } = resolve(href);
+    a.setAttribute("href", "/?path=" + encodeURIComponent(path) + frag);
+  }
+
+  for (const img of container.querySelectorAll("img[src]")) {
+    const src = img.getAttribute("src");
+    if (!src || skipImg.test(src)) continue;
+    const { path } = resolve(src);
+    img.setAttribute("src", "/api/raw?path=" + encodeURIComponent(path));
+  }
+}
+
 function toast(msg) {
   const t = $("toast");
   t.textContent = msg;
@@ -1101,6 +1146,7 @@ function showPanel(which) {
 
   if (which === "md") {
     $("preview").innerHTML = `<div class="markdown-body">${marked.parse(getCode() || "")}</div>`;
+    rewriteRelativeLinks($("preview"), f.path);
     renderMermaidFences($("preview"));
   } else if (which === "html") {
     $("preview-iframe").srcdoc = getCode() || "";
