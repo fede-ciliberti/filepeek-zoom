@@ -36,6 +36,8 @@ FILEPEEK_ROOT=<carpeta-a-servir> FILEPEEK_PORT=8766 .venv/bin/python app.py
 
 `127.0.0.1:8766` por defecto (el 8765 suele estar tomado por otros servicios locales). Sin auth en modo local.
 
+**Lanzador**: parado en un proyecto, `filepeek` (symlink de `bin/filepeek` en `~/.local/bin`) levanta el servidor en segundo plano sirviendo ese proyecto y abre el navegador en su carpeta de diagramas; `filepeek stop` lo apaga. Ver `README.md` (Quickstart) y `docs/PLAN.md` (§10) para el detalle.
+
 ## Cómo sincronizar con upstream
 
 ```bash

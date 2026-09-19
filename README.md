@@ -31,6 +31,19 @@ FILEPEEK_ROOT=/ruta/a/los/diagramas FILEPEEK_PORT=8766 .venv/bin/python app.py
 
 Abrí `http://localhost:8766`, navegá a un `.mmd` → se despliega a pantalla completa con controles de zoom y arrastre.
 
+### Lanzador `filepeek`
+
+Desde cualquier carpeta de un proyecto, `filepeek` levanta el servidor en segundo plano sirviendo ese proyecto y abre el navegador directo en su carpeta de diagramas (`docs/diagrams`, `diagrams` o `docs/diagramas` — la primera que tenga `.mmd`). `filepeek stop` lo apaga.
+
+```bash
+ln -s /ruta/a/filepeek-zoom/bin/filepeek ~/.local/bin/filepeek  # una sola vez
+cd ~/Trabajos/MiProyecto && filepeek          # arranca (o reabre si ya corría)
+filepeek --port 8770 --no-open                # variantes
+filepeek stop                                 # apaga la instancia de este proyecto
+```
+
+El estado vive en `~/.cache/filepeek/<proyecto>/` (`pid`, `port`, `log`). Un `.filepeek` opcional en la raíz del proyecto acepta `root=`, `port=`, `host=`, `open=`.
+
 ## Base
 
 - Fork de `filepeek` (MIT). Upstream: `thrinz/filepeek` (remote `upstream`).

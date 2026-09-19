@@ -1,0 +1,299 @@
+#!/usr/bin/env bash
+# filepeek — lanzador global del fork filepeek-zoom.
+#
+# Parado en cualquier carpeta de un proyecto, `filepeek` levanta el servidor
+# sirviendo ese proyecto, aterriza el navegador en su carpeta de diagramas
+# y corre en segundo plano. `filepeek stop` lo apaga.
+#
+# Uso:
+#   filepeek [--port N] [--no-open]   # arranca (o reabre si ya corría)
+#   filepeek stop                      # apaga la instancia de este proyecto
+#   filepeek --help                    # esta ayuda
+#
+# No tiene dependencias más allá de bash + coreutils (+ xdg-open para el navegador).
+set -euo pipefail
+
+# --- Dónde vive el fork (este script está en <fork>/bin/filepeek) ---
+# Ojo: puede invocarse por el symlink ~/.local/bin/filepeek; resolvemos el
+# enlace real ANTES de calcular el directorio del fork (BASH_SOURCE da el symlink).
+SELF="$(readlink -f "${BASH_SOURCE[0]}")"
+FORK_DIR="$(cd "$(dirname "$SELF")/.." && pwd)"
+APP_PY="$FORK_DIR/app.py"
+PY="$FORK_DIR/.venv/bin/python"
+
+DEFAULT_PORT=8766
+MAX_PORT=8799
+CACHE_BASE="$HOME/.cache/filepeek"
+
+mostrar_ayuda() {
+  cat <<'AYUDA'
+filepeek — serví el proyecto actual en el navegador, con pan/zoom en Mermaid.
+
+Uso:
+  filepeek [--port N] [--no-open]   Arranca el servidor para el proyecto
+                                    actual (o reabre el navegador si ya corría).
+  filepeek stop                     Apaga la instancia de este proyecto.
+  filepeek --help                   Muestra esta ayuda.
+
+Proyecto: $FILEPEEK_ROOT si está seteado, si no la raíz del repo git,
+          si no el directorio actual. El archivo opcional `.filepeek`
+          en la raíz del proyecto acepta `root=`, `port=`, `host=`, `open=`.
+
+Ejemplos:
+  cd ~/Trabajos/MiProyecto && filepeek
+  filepeek --port 8770 --no-open
+  filepeek stop
+AYUDA
+}
+
+# --- Argumentos ---
+CMD="start"
+CLI_PORT=""
+NO_OPEN=0
+args=("$@")
+i=0
+while [[ "$i" -lt "${#args[@]}" ]]; do
+  arg="${args[$i]}"
+  case "$arg" in
+    stop) CMD="stop" ;;
+    --help|-h) mostrar_ayuda; exit 0 ;;
+    --no-open) NO_OPEN=1 ;;
+    --port)
+      i=$((i + 1))
+      if [[ "$i" -ge "${#args[@]}" ]]; then
+        echo "filepeek: --port necesita un valor: --port N" >&2; exit 1
+      fi
+      CLI_PORT="${args[$i]}" ;;
+    --port=*) CLI_PORT="${arg#--port=}" ;;
+    *)
+      echo "filepeek: argumento desconocido: $arg (probá filepeek --help)" >&2; exit 1 ;;
+  esac
+  i=$((i + 1))
+done
+
+# --- Raíz del proyecto: $FILEPEEK_ROOT → git toplevel → $PWD ---
+if [[ -n "${FILEPEEK_ROOT:-}" ]]; then
+  PROJ_DIR="$FILEPEEK_ROOT"
+elif git_root="$(git rev-parse --show-toplevel 2>/dev/null)"; then
+  PROJ_DIR="$git_root"
+else
+  PROJ_DIR="$PWD"
+fi
+# Normalizar (sacar trailing slash, resolver . y .. sin romper espacios).
+PROJ_DIR="$(cd "$PROJ_DIR" && pwd)"
+
+# --- Config opcional `.filepeek` (key=value, `#` comentarios) ---
+CFG_ROOT=""; CFG_PORT=""; CFG_HOST=""; CFG_OPEN=""
+if [[ -f "$PROJ_DIR/.filepeek" ]]; then
+  while IFS= read -r linea || [[ -n "$linea" ]]; do
+    # Recortar espacios y carriage return.
+    linea="${linea%$'\r'}"
+    linea="${linea#"${linea%%[![:space:]]*}"}"
+    linea="${linea%"${linea##*[![:space:]]}"}"
+    [[ -z "$linea" || "$linea" == \#* || "$linea" != *=* ]] && continue
+    clave="${linea%%=*}"; valor="${linea#*=}"
+    clave="${clave#"${clave%%[![:space:]]*}"}"; clave="${clave%"${clave##*[![:space:]]}"}"
+    valor="${valor#"${valor%%[![:space:]]*}"}"; valor="${valor%"${valor##*[![:space:]]}"}"
+    case "$clave" in
+      root) CFG_ROOT="$valor" ;;
+      port) CFG_PORT="$valor" ;;
+      host) CFG_HOST="$valor" ;;
+      open) CFG_OPEN="$valor" ;;
+      *) ;; # claves desconocidas se ignoran
+    esac
+  done < "$PROJ_DIR/.filepeek"
+fi
+
+# Raíz a servir: `root=` del config puede afinarla (relativa al proyecto).
+SERVE_ROOT="$PROJ_DIR"
+if [[ -n "$CFG_ROOT" ]]; then
+  if [[ "$CFG_ROOT" == /* ]]; then SERVE_ROOT="$CFG_ROOT"; else SERVE_ROOT="$PROJ_DIR/$CFG_ROOT"; fi
+  SERVE_ROOT="$(cd "$SERVE_ROOT" && pwd)"
+fi
+
+# Host: config o default local. Nunca 0.0.0.0 (herramienta local).
+HOST="${CFG_HOST:-127.0.0.1}"
+if [[ "$HOST" == "0.0.0.0" ]]; then
+  echo "filepeek: aviso: host 0.0.0.0 no permitido, uso 127.0.0.1." >&2
+  HOST="127.0.0.1"
+fi
+
+# Estado por proyecto: ~/.cache/filepeek/<nombre>-<hash>/ con pid, port, log.
+slug="$(basename "$SERVE_ROOT" | tr -cd 'A-Za-z0-9._-' | cut -c1-40)"
+hash="$(printf '%s' "$SERVE_ROOT" | sha256sum | cut -c1-12)"
+STATE_DIR="$CACHE_BASE/${slug}-${hash}"
+PID_FILE="$STATE_DIR/pid"
+PORT_FILE="$STATE_DIR/port"
+LOG_FILE="$STATE_DIR/log"
+ROOT_FILE="$STATE_DIR/root"
+
+# ¿El pid es un proceso vivo Y nuestro (app.py del fork + este root)?
+es_nuestro() {
+  local pid="$1" root="$2"
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+  [[ -d "/proc/$pid" ]] || return 1
+  tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -qF -- "$APP_PY" || return 1
+  tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | grep -qxF -- "FILEPEEK_ROOT=$root" || return 1
+  return 0
+}
+
+puerto_libre() {
+  ! ss -tln 2>/dev/null | grep -qF -- ":$1 "
+}
+
+# Carpeta de aterrizaje: primera candidata con al menos un .mmd/.mermaid.
+detectar_landing() {
+  local root="$1" cand dir
+  for cand in "docs/diagrams" "diagrams" "docs/diagramas"; do
+    dir="$root/$cand"
+    [[ -d "$dir" ]] || continue
+    if find "$dir" \( -name .git -o -name .venv -o -name node_modules \) -prune \
+        -o \( -iname '*.mmd' -o -iname '*.mermaid' \) -print 2>/dev/null | grep -q .; then
+      printf '%s' "$cand"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Codificación mínima para el ?path= (barras y espacios alcanzan).
+urlencode_path() {
+  local s="$1"
+  s="${s// /%20}"
+  s="${s//\//%2F}"
+  printf '%s' "$s"
+}
+
+abrir_navegador() {
+  local url="$1"
+  if [[ "$NO_OPEN" == "1" ]]; then return 0; fi
+  if [[ "${CFG_OPEN:-}" == "0" || "${CFG_OPEN:-}" == "false" || "${CFG_OPEN:-}" == "no" ]]; then
+    echo "filepeek: apertura del navegador desactivada por .filepeek (open=0)." >&2
+    return 0
+  fi
+  if command -v xdg-open >/dev/null 2>&1; then
+    xdg-open "$url" >/dev/null 2>&1 || echo "filepeek: aviso: no pude abrir el navegador, abrí a mano: $url" >&2
+  else
+    echo "filepeek: xdg-open no encontrado, abrí a mano: $url" >&2
+  fi
+}
+
+# --- stop: solo la instancia de ESTE proyecto, solo si el pid es nuestro ---
+if [[ "$CMD" == "stop" ]]; then
+  if [[ ! -f "$PID_FILE" ]]; then
+    echo "filepeek: no hay instancia registrada para $SERVE_ROOT."
+    exit 0
+  fi
+  pid="$(cat "$PID_FILE")"
+  if es_nuestro "$pid" "$SERVE_ROOT"; then
+    kill "$pid" 2>/dev/null || true
+    # Esperar hasta 5s a que muera; si se planta, SIGKILL.
+    for _ in $(seq 1 50); do
+      kill -0 "$pid" 2>/dev/null || break
+      sleep 0.1
+    done
+    if kill -0 "$pid" 2>/dev/null; then
+      kill -9 "$pid" 2>/dev/null || true
+    fi
+    echo "filepeek: instancia detenida (pid $pid, $SERVE_ROOT)."
+  else
+    echo "filepeek: el pid registrado ($pid) ya no es nuestro, limpio el estado."
+  fi
+  rm -f "$PID_FILE"
+  exit 0
+fi
+
+# --- start ---
+if [[ ! -x "$PY" ]]; then
+  echo "filepeek: no encontré el entorno en $PY." >&2
+  echo "filepeek: corré ./install.sh primero en $FORK_DIR." >&2
+  exit 1
+fi
+
+# Puerto: --port N → $FILEPEEK_PORT → .filepeek port= → 8766.
+# (Se resuelve después del chequeo de idempotencia: si ya corría, se reusa
+# el puerto guardado sin escanear.)
+resolver_puerto() {
+  local p
+  if [[ -n "$CLI_PORT" ]]; then
+    p="$CLI_PORT"
+  elif [[ -n "${FILEPEEK_PORT:-}" ]]; then
+    p="$FILEPEEK_PORT"
+  elif [[ -n "$CFG_PORT" ]]; then
+    p="$CFG_PORT"
+  else
+    p="$DEFAULT_PORT"
+  fi
+  local pedido="$p"
+  while ! puerto_libre "$p"; do
+    p=$((p + 1))
+    if [[ "$p" -gt "$MAX_PORT" ]]; then
+      echo "filepeek: no hay puertos libres entre $pedido y $MAX_PORT." >&2
+      exit 1
+    fi
+  done
+  if [[ "$p" != "$pedido" ]]; then
+    echo "filepeek: puerto $pedido ocupado, uso $p." >&2
+  fi
+  printf '%s' "$p"
+}
+
+mkdir -p "$STATE_DIR"
+printf '%s' "$SERVE_ROOT" > "$ROOT_FILE"
+
+# Idempotencia: si ya servimos este proyecto, reabrir el navegador y listo.
+# (Antes de resolver/escanear puertos: el puerto guardado es el que vale.)
+if [[ -f "$PID_FILE" ]]; then
+  viejo="$(cat "$PID_FILE")"
+  if es_nuestro "$viejo" "$SERVE_ROOT"; then
+    puerto_viejo="$(cat "$PORT_FILE" 2>/dev/null || printf '%s' "$DEFAULT_PORT")"
+    landing="$(detectar_landing "$SERVE_ROOT" || true)"
+    if [[ -n "${landing:-}" ]]; then
+      url="http://127.0.0.1:$puerto_viejo/?path=$(urlencode_path "$landing")"
+    else
+      url="http://127.0.0.1:$puerto_viejo/"
+    fi
+    echo "filepeek: ya está corriendo para $SERVE_ROOT (pid $viejo)."
+    echo "filepeek: $url"
+    abrir_navegador "$url"
+    exit 0
+  else
+    # Pid rancio: era de otro proceso o murió. Se sigue y se pisa.
+    rm -f "$PID_FILE"
+  fi
+fi
+
+PORT="$(resolver_puerto)"
+
+# Lanzar en segundo plano, log al archivo de estado.
+# (FILEPEEK_STATE_DIR propio por proyecto: bookmarks y recents no se mezclan.)
+FILEPEEK_ROOT="$SERVE_ROOT" FILEPEEK_PORT="$PORT" FILEPEEK_HOST="$HOST" \
+  FILEPEEK_STATE_DIR="$STATE_DIR" \
+  setsid "$PY" "$APP_PY" >>"$LOG_FILE" 2>&1 < /dev/null &
+nuevo="$!"
+echo "$nuevo" > "$PID_FILE"
+printf '%s' "$PORT" > "$PORT_FILE"
+
+# Esperar a que responda (hasta ~10s); si murió, mostrar la cola del log.
+ok=0
+for _ in $(seq 1 50); do
+  if curl -sf -o /dev/null "http://127.0.0.1:$PORT/" 2>/dev/null; then ok=1; break; fi
+  kill -0 "$nuevo" 2>/dev/null || break
+  sleep 0.2
+done
+if [[ "$ok" != "1" ]]; then
+  rm -f "$PID_FILE"
+  echo "filepeek: el servidor no arrancó, mirá el log: $LOG_FILE" >&2
+  tail -n 20 "$LOG_FILE" >&2 || true
+  exit 1
+fi
+
+landing="$(detectar_landing "$SERVE_ROOT" || true)"
+if [[ -n "${landing:-}" ]]; then
+  url="http://127.0.0.1:$PORT/?path=$(urlencode_path "$landing")"
+else
+  url="http://127.0.0.1:$PORT/"
+fi
+echo "filepeek: sirviendo $SERVE_ROOT en el puerto $PORT (pid $nuevo, log $LOG_FILE)."
+echo "filepeek: $url"
+abrir_navegador "$url"

@@ -13,6 +13,7 @@
 7. [Desarrollo: setup, correr, verificar](#7-desarrollo-setup-correr-verificar)
 8. [Sync con upstream](#8-sync-con-upstream)
 9. [Anexo: snippets de implementación](#9-anexo-snippets-de-implementación)
+10. [Lanzador `bin/filepeek`](#10-lanzador-binfilepeek)
 
 ---
 
@@ -155,3 +156,20 @@ async function renderMermaid(code) {
 
 ### Referencia — `PanZoomState` de Mermaid Live (para M2/M3)
 Mermaid Live envuelve `svg-pan-zoom` + `hammerjs` en una clase `PanZoomState` (con `zoomIn/zoomOut/reset/restorePanZoom`). Es un buen modelo si en M3 queremos persistir la vista o agregar botones propios.
+
+---
+
+## 10. Lanzador `bin/filepeek`
+
+Script bash autocontenido (sin deps más allá de bash + coreutils + `xdg-open`) para usar filepeek como herramienta global: parado en cualquier proyecto, `filepeek` lo sirve y abre el navegador directo en sus diagramas.
+
+**Comportamiento**:
+- **Proyecto**: `$FILEPEEK_ROOT` si está seteado → raíz del repo git → `$PWD`. Un `.filepeek` opcional en la raíz acepta `root=`, `port=`, `host=`, `open=` (ignora claves desconocidas y `#` comentarios).
+- **Landing**: primera carpeta que exista y contenga un `.mmd`/`.mermaid` (recursivo, sin `.git`/`.venv`/`node_modules`) entre `docs/diagrams`, `diagrams`, `docs/diagramas`. Si ninguna califica, abre `/`. Usa el deep-link `/?path=<rel>` que ya soporta el frontend.
+- **Puerto**: `--port N` → `$FILEPEEK_PORT` → `.filepeek` `port=` → `8766`. Si está ocupado, sube hasta `8799` y avisa por stderr (el aviso va a stderr para no romper el `FILEPEEK_PORT` que lee `app.py`).
+- **Idempotencia**: estado por proyecto en `~/.cache/filepeek/<slug>-<hash>/` (`pid`, `port`, `log`, `root`). Si el pid sigue vivo y su cmdline/environ coinciden con nuestro `app.py` + root, no arranca otro: reimprime la URL y reabre el navegador. El chequeo de idempotencia corre antes de escanear puertos, así la segunda corrida reusa el puerto guardado.
+- **Arranque**: `setsid .venv/bin/python app.py` con el log al archivo de estado y `FILEPEEK_STATE_DIR` propio por proyecto (bookmarks/recents no se mezclan). Sin `.venv`, falla con mensaje claro (correr `./install.sh`).
+- **`stop`**: mata solo el pid registrado y solo si pasa el chequeo de propiedad; después borra el pid. Nunca `pkill` por nombre, nunca toca otros proyectos.
+- **Bind**: siempre `127.0.0.1` (un `host=0.0.0.0` en el config se rechaza con aviso).
+
+**Decisiones**: no toca `app.py` ni `static/index.html` (puramente aditivo, diff chico per reglas del fork); el symlink global vive en `~/.local/bin/filepeek` (fuera del repo).
