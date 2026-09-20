@@ -1,6 +1,6 @@
 # AGENTS.md — filepeek-zoom
 
-> Fork de [filepeek](https://github.com/thrinz/filepeek) (MIT, remote `upstream`) que agrega **pan/zoom** (svg-pan-zoom) a los diagramas Mermaid. Herramienta de desarrollo, independiente de cualquier proyecto consumidor.
+> Fork de [filepeek](https://github.com/thrinz/filepeek) (MIT, remote `upstream`) con dos aportes: **pan/zoom** (svg-pan-zoom) en los diagramas Mermaid y **navegación de docs** (links/imágenes relativos + anclas de sección). Herramienta de desarrollo, independiente de cualquier proyecto consumidor.
 
 ## Estructura
 
@@ -34,18 +34,27 @@ FILEPEEK_ROOT=<carpeta> FILEPEEK_PORT=8766 .venv/bin/python app.py
 
 ## Dónde vive el aporte del fork
 
-Todo el pan/zoom está en `static/index.html`:
+Todo el aporte del fork vive en `static/index.html` (nada en `app.py`).
+
+**Pan/zoom de Mermaid:**
 
 - `applyMermaidPanZoom(container)` — helper compartido (lo usan ambos renders).
 - `renderMermaid()` → panel `#mermaid-view` (standalone `.mmd`).
 - `renderMermaidFences()` + `open/closeMermaidLightbox()` → overlay `#mermaid-lightbox` (fences ` ```mermaid ` en Markdown, click-to-expand).
 - `MERMAID_EXTS` (front) y `TEXT_EXTS` (back, `app.py`) — si agregás una extensión de diagrama, tocá **ambas**.
-- Carga de la lib: `<script>` CDN de `svg-pan-zoom` junto al de Mermaid (línea ~26).
+- Carga de la lib: `<script>` CDN de `svg-pan-zoom` junto al de Mermaid (línea ~24).
+
+**Navegación de docs:**
+
+- `rewriteRelativeLinks(container, basePath)` — tras `marked.parse()`, reescribe `a[href]` relativos a `/?path=<resuelto>` e `img[src]` a `/api/raw?path=<resuelto>`; resuelve `.`/`..` contra la carpeta del archivo actual y deja intactos externos, protocol-relative, anclas puras (`#`), links ya en formato filepeek y `/api/`.
+- `marked-gfm-heading-id` (CDN, línea 24; `marked.use(...)` en ~563) — genera `id` estilo GitHub en los headings, así los links `#seccion` existentes funcionan sin tocarlos.
+- Click in-app sin recarga: handler en `#preview` sobre `a[data-fp-path]` → `openFromUrl()`; `_pendingHash` + `scrollToHash()` scrollean al heading al renderizar; `syncUrl()` conserva el fragmento en la URL.
 
 ## Gotchas verificados
 
 - **El SVG de Mermaid sale sin `viewBox`** (`width="100%"`, sin height). Sin setear `viewBox` desde `getBBox()` + `width/height: 100%`, `svg-pan-zoom` no calcula el `fit` y los controles quedan fuera de vista. Ya resuelto en el helper — no lo rompas.
 - Pan/zoom es **best-effort** (try/catch con fallback a diagrama estático). Mantenelo así.
 - **Diff chico y localizado**: no reescribas frontend ni backend; cambios aditivos y aislados para que `git merge upstream/main` sea trivial. Conflictos típicos: `static/index.html` (preservá el bloque pan/zoom) y `README.md` (el nuestro reemplaza al del upstream).
-- **Verificación de frontend con Playwright** (abrir un `.mmd`, chequear la capa de svg-pan-zoom y los controles). `curl` solo confirma que sirve, no que el JS anda.
+- **El `#fragmento` va FUERA del `?path=`** en los links reescritos. Si se codifica dentro (`encodeURIComponent(path + frag)`), el backend busca un archivo con `#` en el nombre → 404. Ya resuelto en `rewriteRelativeLinks()` — no lo metas en el encoding.
+- **Verificación de frontend con Playwright** (abrir un `.mmd`, chequear la capa de svg-pan-zoom y los controles; en Markdown, click en un link relativo y en un `#ancla`). `curl` solo confirma que sirve, no que el JS anda.
 - Env vars que importan: `FILEPEEK_ROOT`, `FILEPEEK_PORT`/`HOST`, `FILEPEEK_STATE_DIR` (estado separado por proyecto), `FILEPEEK_PASSWORD_HASH`/`TOKEN`/`SECRET`. El estado (`permlinks/bookmarks/recents/auth.json`, `backup_config.json` con secreto S3) vive en `STATE_DIR` y está gitignoreado — nunca lo commitees, ni `.env` ni credenciales.

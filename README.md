@@ -1,6 +1,6 @@
 # filepeek-zoom
 
-> Fork de [filepeek](https://github.com/thrinz/filepeek) que agrega **pan + zoom** a los diagramas Mermaid, para navegar los **diagramas-modelo de un sistema** con la comodidad de Mermaid Live — local, sin pegar nada.
+> Fork de [filepeek](https://github.com/thrinz/filepeek) con dos aportes: **pan + zoom** en los diagramas Mermaid (como Mermaid Live) y **navegación de docs** (links e imágenes relativos + anclas de sección). Local, sin pegar nada.
 
 ## El problema
 
@@ -8,9 +8,13 @@
 
 Y hay una necesidad distinta a "leer docs": tener una carpeta de **diagramas canónicos del sistema** — el modelo entidad-relación, la máquina de estados, la arquitectura — como artefactos propios (`.mmd` puros, sin prosa), y poder **recorrerlos** cómodamente.
 
+Además, un Markdown con **links cruzados** entre documentos (índices, referencias a otras secciones) se rompe al servirlo: los links e imágenes relativos resuelven contra `/` y dan 404, y los `#ancla` de sección no tienen destino.
+
 ## La solución
 
-Agregar a los diagramas Mermaid la misma capa de navegación que usa [Mermaid Live Editor](https://mermaid.live): la librería [`svg-pan-zoom`](https://github.com/bumbu/svg-pan-zoom) (+ `hammerjs` para touch). No hay que "mergear" nada: Mermaid Live solo la usa; es pública y standalone.
+**Diagramas.** Agregar a los diagramas Mermaid la misma capa de navegación que usa [Mermaid Live Editor](https://mermaid.live): la librería [`svg-pan-zoom`](https://github.com/bumbu/svg-pan-zoom) (+ `hammerjs` para touch). No hay que "mergear" nada: Mermaid Live solo la usa; es pública y standalone.
+
+**Documentos.** Un Markdown servido por filepeek tiene links e imágenes relativos que, sin tratar, resuelven contra `/` y dan 404. El fork los reescribe a las rutas internas (`/?path=` para navegar, `/api/raw?path=` para imágenes) y genera `id` estilo GitHub en los headings, así los `#ancla` de sección funcionan y navegan in-app sin recargar.
 
 ## Estado
 
@@ -19,6 +23,7 @@ Agregar a los diagramas Mermaid la misma capa de navegación que usa [Mermaid Li
 | M1 | Pan/zoom en `.mmd` standalone (panel a pantalla completa) | ✅ |
 | M2 | Diagramas inline en Markdown → click-to-expand con pan/zoom | ✅ |
 | M3 | Controles extra / fullscreen / temas | ⏳ |
+| M4 | Navegación de docs: links/imágenes relativos + anclas de sección | ✅ |
 
 Detalle completo en **[`docs/PLAN.md`](docs/PLAN.md)**.
 

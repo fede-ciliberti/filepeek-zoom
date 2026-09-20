@@ -23,7 +23,9 @@ Cuando el desarrollo de un sistema lo hace mayormente un agente, el humano pierd
 
 Esos diagramas deben ser **artefactos de primera clase** del repo —archivos `.mmd` puros, generados desde la fuente (DB / código), no dibujados a mano— y hay que poder **recorrerlos cómodamente**: arrastrar y hacer zoom, como en [Mermaid Live Editor](https://mermaid.live).
 
-`filepeek` ya sirve la carpeta y renderiza Mermaid, pero **estático**. Este fork agrega la capa de navegación que falta.
+`filepeek` ya sirve la carpeta y renderiza Mermaid, pero **estático**. Este fork agrega la capa de navegación que falta para los diagramas.
+
+La segunda motivación es más terrenal: al usar filepeek sobre una carpeta de docs con **links cruzados**, los links e imágenes relativos daban 404 y los índices con `#ancla` no tenían destino. El fork también arregla eso (ver M4).
 
 **Requisito de Fede (verbatim):** *"poder arrastrar un modelo o hacer zoom de manera sencilla, pero la idea es solo sobre modelos"* — sin notas, sin editar el diagrama, solo pan + zoom.
 
@@ -31,7 +33,10 @@ Esos diagramas deben ser **artefactos de primera clase** del repo —archivos `.
 
 **filepeek** (MIT, `thrinz/filepeek`): un `app.py` (FastAPI) + un `static/index.html`. Sirve una carpeta como web navegable y renderiza Markdown, Mermaid, Excel/Word/PowerPoint, HTML, código, imágenes. Un solo operador, self-hosted, sin base de datos.
 
-**Este fork agrega**: pan + zoom a los diagramas Mermaid, usando **`svg-pan-zoom`** — la misma librería que Mermaid Live Editor usa internamente (confirmado en su `src/lib/util/panZoom.ts`). No es "mergear" Mermaid Live (que es una app SvelteKit completa, no un componente); es reusar la pieza correcta.
+**Este fork agrega** dos cosas, ambas en `static/index.html`:
+
+1. **Pan + zoom a los diagramas Mermaid**, usando **`svg-pan-zoom`** — la misma librería que Mermaid Live Editor usa internamente (confirmado en su `src/lib/util/panZoom.ts`). No es "mergear" Mermaid Live (que es una app SvelteKit completa, no un componente); es reusar la pieza correcta.
+2. **Navegación de documentos Markdown**: los links e imágenes relativos se reescriben a las rutas internas de filepeek y los headings llevan `id` estilo GitHub, así los links cruzados entre docs y los `#ancla` de sección funcionan (antes daban 404 o no tenían destino).
 
 ## 3. Arquitectura de filepeek (lo relevante)
 
@@ -40,15 +45,17 @@ Esos diagramas deben ser **artefactos de primera clase** del repo —archivos `.
 - Extensiones: `MD_EXTS = {".md", ".markdown"}`; `TEXT_EXTS` **incluye `.mmd` y `.mermaid`** (se sirven como texto).
 - El backend es agnóstico al render: manda el texto y el frontend decide cómo mostrarlo.
 
-### Frontend — `static/index.html` (un solo archivo, ~3300 líneas)
-- Carga Mermaid desde CDN: `mermaid@11/dist/mermaid.min.js`.
+### Frontend — `static/index.html` (un solo archivo, ~3400 líneas)
+- Carga desde CDN: Mermaid (`mermaid@11`), `svg-pan-zoom`, `hammerjs` (touch) y `marked-gfm-heading-id`.
 - `MERMAID_EXTS = [".mmd", ".mermaid"]`; `PREVIEW_EXTS` los incluye.
 - Panel dedicado **`#mermaid-view`** (un `<div>` full-flex a pantalla completa) — es donde se despliega un `.mmd`.
 - `showPanel(...)` dispatchea por tipo: `mermaid → "mermaid-view"`.
 - **`renderMermaid(code)`** — renderiza un `.mmd` standalone dentro de `#mermaid-view`.
 - **`renderMermaidFences(rootEl)`** — reemplaza los fences ```` ```mermaid ```` dentro de un Markdown renderizado por diagramas inline.
+- **`rewriteRelativeLinks(container, basePath)`** — reescribe links/imágenes relativos del Markdown a las rutas internas de filepeek (navegación de docs, ver M4).
+- **`marked-gfm-heading-id`** — extensión de marked que agrega `id` estilo GitHub a los headings, habilitando las anclas `#seccion`.
 
-> **Clave**: filepeek **ya renderiza `.mmd` standalone a pantalla completa**. Lo único que falta es el pan/zoom.
+> **Clave**: filepeek **ya renderiza `.mmd` standalone a pantalla completa**. Lo único que falta para los diagramas es el pan/zoom.
 
 ## 4. El plan: funcionalidades
 
@@ -70,6 +77,14 @@ Implementado como **click-to-expand** (opción b): cada fence ```` ```mermaid ``
 - Persistir zoom/pan por archivo (como hace Mermaid Live con su `PanZoomState`).
 - Respetar el tema claro/oscuro en los controles de svg-pan-zoom.
 
+### M4 — Navegación de documentos ✅
+No estaba en el plan original: apareció al usar filepeek sobre una carpeta de docs con links cruzados. Dos problemas, dos fixes:
+
+- **Links e imágenes relativos.** `marked.parse()` emitía el `href` crudo, así que un link como `docs/01-vision.md` resolvía contra `/` → 404. `rewriteRelativeLinks()` reescribe `a[href]` a `/?path=<resuelto>` e `img[src]` a `/api/raw?path=<resuelto>`, resolviendo `.`/`..` contra la carpeta del archivo actual. Deja intactos externos, protocol-relative, anclas puras (`#`), links ya en formato filepeek y `/api/`.
+- **Anclas de sección.** marked no generaba `id` en los headings (los `#seccion` no tenían destino) y `syncUrl()` borraba el fragmento de la URL. Se agregó la extensión oficial **`marked-gfm-heading-id`** (ids estilo GitHub, así los links existentes funcionan sin tocarlos), click in-app sin recarga vía `openFromUrl()`, y `_pendingHash` + `scrollToHash()` para scrollear al heading tras renderizar.
+
+**Resultado**: un Markdown con links relativos e índices con anclas se navega entero dentro del visor, sin recargas ni 404.
+
 ### Fuera de alcance (es del proyecto consumidor, no de la herramienta)
 - El **set de diagramas canónicos** y sus **scripts de generación** (ER desde Postgres, máquina de estados desde el código). Viven en el repo del sistema que consume esta herramienta, no acá.
 
@@ -83,13 +98,16 @@ Implementado como **click-to-expand** (opción b): cada fence ```` ```mermaid ``
 | Dónde vive `svg-pan-zoom` | CDN (consistente con Mermaid) vs vendor en `static/vendor/` | ⏳ abierta — CDN por simplicidad |
 | Botones de control | `controlIconsEnabled: true` (zoom in/out/reset) | ✅ M1 |
 | Persistencia de vista | no en M1; evaluar en M3 | ⏳ |
+| Ids de headings | extensión oficial `marked-gfm-heading-id` (estilo GitHub) | ✅ M4 |
+| `#fragmento` en links reescritos | fuera del `?path=` (si no, el backend busca un archivo con `#` en el nombre → 404) | ✅ M4 |
 
 ## 6. Roadmap
 
 1. **M1** — pan/zoom standalone. *(hecho)*
 2. **M2** — click-to-expand para diagramas inline. *(hecho)*
 3. **M3** — pulido: reset/fit, fullscreen, tema, persistencia.
-4. **Opcional** — PR al upstream `thrinz/filepeek` (el patch es chico y genérico; podría interesarle).
+4. **M4** — navegación de documentos: links/imágenes relativos + anclas de sección. *(hecho, fuera del plan original)*
+5. **Opcional** — PR al upstream `thrinz/filepeek` (los patches son chicos y genéricos; podrían interesarle).
 
 ## 7. Desarrollo: setup, correr, verificar
 
@@ -108,7 +126,7 @@ git fetch upstream
 git merge upstream/main
 ```
 
-Nuestro diff se concentra en `static/index.html` (y el `<script>` de svg-pan-zoom). Los conflictos, si aparecen, se resuelven preservando el bloque de pan/zoom.
+Nuestro diff se concentra en `static/index.html` (los `<script>` de CDN y los bloques de pan/zoom y de navegación de docs). Los conflictos, si aparecen, se resuelven preservando esos bloques.
 
 ## 9. Anexo: snippets de implementación
 
@@ -156,6 +174,13 @@ async function renderMermaid(code) {
 
 ### Referencia — `PanZoomState` de Mermaid Live (para M2/M3)
 Mermaid Live envuelve `svg-pan-zoom` + `hammerjs` en una clase `PanZoomState` (con `zoomIn/zoomOut/reset/restorePanZoom`). Es un buen modelo si en M3 queremos persistir la vista o agregar botones propios.
+
+### M4 — Puntos no obvios de la navegación
+El código completo vive en `static/index.html` (`rewriteRelativeLinks()`); acá solo lo que no se deduce leyéndolo:
+
+- **Lista de skip** de `rewriteRelativeLinks()`: deja intactos los `href` que matchean `^(?:[a-z][a-z0-9+.-]*:|\/\/|#|\/\?path=|\/view\?path=|\/api\/)` — esquemas (`https:`), protocol-relative, anclas puras, links ya en formato filepeek y rutas de API. Para `img[src]` el skip es `^(?:[a-z][a-z0-9+.-]*:|\/\/|\/static\/|\/api\/)`.
+- **El `#fragmento` se separa ANTES del encoding**: `encodeURIComponent(path + frag)` mete el `#` en el path y el backend busca un archivo con `#` en el nombre → 404. Se resuelve el path, se codifica, y el fragmento se concatena crudo.
+- **`data-fp-path` / `data-fp-frag`**: el handler de click los lee para navegar in-app (`openFromUrl()`) sin recarga y conservar el fragmento.
 
 ---
 
